@@ -3,7 +3,7 @@ from __future__ import annotations
 import io
 import re
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Dict, Iterable, List, Sequence, Tuple, Optional
 
 import pandas as pd
 from pypdf import PdfReader  # type: ignore
@@ -101,13 +101,16 @@ def compute_keyword_stats(
     transcripts: List[Transcript],
     keywords: List[str],
     words_per_minute: int = 150,
+    weights_by_transcript_id: Optional[Dict[int, float]] = None,
+    transcript_index_by_id: Optional[Dict[int, int]] = None,
 ) -> Dict[str, object]:
     """
     Compute deterministic keyword metrics across transcripts.
     Returns dict with:
       - keywords_df: pd.DataFrame with columns:
             keyword, total_mentions, avg_mentions_per_transcript,
-            avg_relative_position_pct, pct_transcripts_with_mention
+            avg_relative_position_pct, pct_transcripts_with_mention,
+            per_transcript_counts, weighted_mentions
       - avg_transcript_word_count: float
       - avg_transcript_minutes: float
     """
@@ -121,6 +124,8 @@ def compute_keyword_stats(
                     "avg_mentions_per_transcript",
                     "avg_relative_position_pct",
                     "pct_transcripts_with_mention",
+                    "per_transcript_counts",
+                    "weighted_mentions",
                 ]
             ),
             "avg_transcript_word_count": 0.0,
@@ -131,6 +136,7 @@ def compute_keyword_stats(
     per_kw_total_mentions: Dict[str, int] = {kw: 0 for kw in cleaned_keywords}
     per_kw_transcripts_with_mention: Dict[str, int] = {kw: 0 for kw in cleaned_keywords}
     per_kw_relative_positions: Dict[str, List[float]] = {kw: [] for kw in cleaned_keywords}
+    per_kw_counts_by_transcript: Dict[str, Dict[int, int]] = {kw: {} for kw in cleaned_keywords}
 
     word_counts: List[int] = []
 
@@ -157,6 +163,7 @@ def compute_keyword_stats(
 
             per_kw_total_mentions[kw] += len(matches)
             per_kw_transcripts_with_mention[kw] += 1
+            per_kw_counts_by_transcript[kw][int(t.id)] = per_kw_counts_by_transcript[kw].get(int(t.id), 0) + len(matches)
             # For relative position, take the first token index of the match
             for m in matches:
                 start_char = m.start()
@@ -176,6 +183,25 @@ def compute_keyword_stats(
         pct_with_mention = (
             per_kw_transcripts_with_mention.get(kw, 0) / num_transcripts * 100.0 if num_transcripts > 0 else 0.0
         )
+        # Build per-transcript breakdown like "#1 (3), #2 (7)"
+        counts_map = per_kw_counts_by_transcript.get(kw, {})
+        breakdown_parts: List[str] = []
+        weighted_sum = 0.0
+        # Sort by transcript index if provided, otherwise by transcript id
+        def _sort_key(item: Tuple[int, int]) -> Tuple[int, int]:
+            tid, _ = item
+            if transcript_index_by_id and tid in transcript_index_by_id:
+                return (transcript_index_by_id[tid], tid)
+            return (tid, tid)
+
+        for tid, count in sorted(counts_map.items(), key=_sort_key):
+            idx = transcript_index_by_id.get(tid, None) if transcript_index_by_id else None
+            label = f"#{idx}" if idx is not None else f"id:{tid}"
+            breakdown_parts.append(f"{label} ({count})")
+            if weights_by_transcript_id is not None:
+                weight = float(weights_by_transcript_id.get(tid, 0.0))
+                weighted_sum += weight * float(count)
+
         rows.append(
             {
                 "keyword": kw,
@@ -183,6 +209,8 @@ def compute_keyword_stats(
                 "avg_mentions_per_transcript": float(avg_mentions),
                 "avg_relative_position_pct": float(avg_rel_pct),
                 "pct_transcripts_with_mention": float(pct_with_mention),
+                "per_transcript_counts": ", ".join(breakdown_parts),
+                "weighted_mentions": float(weighted_sum) if weights_by_transcript_id is not None else float(total_mentions),
             }
         )
 

@@ -20,6 +20,8 @@ from src.text_processing import (
 from src.ui_components import (
     render_keyword_input,
     render_library_selector,
+    render_transcript_weights,
+    render_transcript_mapping_table,
 )
 
 
@@ -91,25 +93,50 @@ def main() -> None:
     st.caption("Enter comma-separated terms or upload a CSV (first column is used).")
 
     st.divider()
-    compute = st.button("Compute keyword metrics", type="primary", disabled=(len(selected_ids) == 0 or len(keywords) == 0))
-    if compute:
+    # Prepare selected transcript objects and weights UI
+    selected_transcripts: List[Transcript] = []
+    index_by_id: dict[int, int] = {}
+    if selected_ids:
         with get_session() as session:
-            selected: List[Transcript] = [get_transcript(session, tid) for tid in selected_ids]
-            selected = [t for t in selected if t is not None]
+            lookup = {t.id: t for t in list_transcripts(session=session)}
+        for i, tid in enumerate(selected_ids, start=1):
+            if tid in lookup:
+                selected_transcripts.append(lookup[tid])
+                index_by_id[int(tid)] = i
 
-        if not selected:
+    if selected_transcripts:
+        st.subheader("Weights")
+        weights_pct = render_transcript_weights(selected_transcripts, key="analysis_weights")
+        weights_fraction = {tid: (pct / 100.0) for tid, pct in weights_pct.items()}
+        sum_ok = abs(sum(weights_pct.values()) - 100.0) < 1e-6
+    else:
+        weights_fraction = {}
+        sum_ok = False
+
+    compute = st.button(
+        "Compute keyword metrics",
+        type="primary",
+        disabled=(len(selected_ids) == 0 or len(keywords) == 0 or not sum_ok),
+    )
+    if compute:
+        if not selected_transcripts:
             st.warning("No valid transcripts selected.")
             return
 
         result = compute_keyword_stats(
-            transcripts=selected,
+            transcripts=selected_transcripts,
             keywords=keywords,
             words_per_minute=st.session_state.get("words_per_minute", 150),
+            weights_by_transcript_id=weights_fraction,
+            transcript_index_by_id=index_by_id,
         )
 
         st.subheader("Results")
         st.metric("Average transcript length (words)", int(result["avg_transcript_word_count"]))
         st.metric("Average transcript duration (minutes)", round(float(result["avg_transcript_minutes"]), 2))
+
+        st.markdown("Transcript index mapping")
+        render_transcript_mapping_table(selected_transcripts, index_by_id)
 
         df: pd.DataFrame = result["keywords_df"]
         st.dataframe(df, use_container_width=True, hide_index=True)

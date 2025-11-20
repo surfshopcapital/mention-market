@@ -91,9 +91,39 @@ def main() -> None:
     _render_library_table(transcripts)
 
     st.divider()
-    st.subheader("Manage transcript")
-    selected_ids = render_library_selector(transcripts, key="library_selector", label="Select transcript(s)")
+    st.subheader("Manage transcript(s)")
+    selected_ids = render_library_selector(transcripts, key="library_selector", label="Select transcript(s) for edit/bulk tag")
     selected_id: Optional[int] = selected_ids[0] if selected_ids else None
+
+    # Bulk tag editor
+    if len(selected_ids) > 1:
+        st.markdown("Bulk tag editor")
+        with get_session() as session:
+            updated_list = list_transcripts(session=session)
+            all_tag_names = sorted({tag.name for t in updated_list for tag in t.tags})
+            selected_transcripts = [t for t in updated_list if t.id in selected_ids]
+            current_selected_tags = sorted({tag.name for t in selected_transcripts for tag in t.tags})
+        bulk_tags = render_tag_editor(existing_tags=all_tag_names, selected_tags=current_selected_tags)
+        cols = st.columns(2)
+        with cols[0]:
+            if st.button("Add tags to selected"):
+                with get_session() as session:
+                    updated_list = list_transcripts(session=session)
+                    by_id = {t.id: t for t in updated_list}
+                    for tid in selected_ids:
+                        t = by_id.get(tid)
+                        if not t:
+                            continue
+                        union = sorted({*bulk_tags, *[tag.name for tag in t.tags]})
+                        set_transcript_tags(session, tid, union)
+                st.success("Tags added to selected transcripts.")
+        with cols[1]:
+            if st.button("Replace tags on selected"):
+                with get_session() as session:
+                    for tid in selected_ids:
+                        set_transcript_tags(session, tid, bulk_tags)
+                st.success("Tags replaced on selected transcripts.")
+        st.divider()
 
     if selected_id is not None:
         with get_session() as session:

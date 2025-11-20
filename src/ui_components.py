@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Iterable, List, Sequence
+from typing import Iterable, List, Sequence, Dict
 
 import pandas as pd
 import streamlit as st
@@ -61,4 +61,62 @@ def render_tag_editor(*, existing_tags: Sequence[str], selected_tags: Sequence[s
             selected.append(new_tag.strip())
     return selected
 
+
+def render_transcript_mapping_table(transcripts: Sequence[Transcript], index_by_id: Dict[int, int]) -> None:
+    df = pd.DataFrame(
+        [
+            {
+                "#": index_by_id.get(int(t.id), None),
+                "Title": t.title,
+                "Word Count": t.word_count,
+                "File Type": t.file_type,
+            }
+            for t in transcripts
+        ]
+    ).sort_values(by="#")
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+
+def render_transcript_weights(transcripts: Sequence[Transcript], *, key: str) -> Dict[int, float]:
+    """
+    Render per-transcript percentage weights that sum to 100.
+    Returns mapping transcript_id -> percentage (0-100).
+    """
+    default_pct = round(100.0 / max(len(transcripts), 1), 2)
+    weights_state_key = f"{key}_weights"
+    if weights_state_key not in st.session_state:
+        st.session_state[weights_state_key] = {int(t.id): default_pct for t in transcripts}
+    # Keep state consistent with current selection
+    existing = st.session_state[weights_state_key]
+    current_ids = {int(t.id) for t in transcripts}
+    # Drop removed
+    for tid in list(existing.keys()):
+        if tid not in current_ids:
+            existing.pop(tid, None)
+    # Add new
+    for t in transcripts:
+        existing.setdefault(int(t.id), default_pct)
+
+    cols = st.columns([3, 1])
+    with cols[0]:
+        for t in transcripts:
+            tid = int(t.id)
+            st.session_state[weights_state_key][tid] = st.number_input(
+                f"Weight % – {t.title} (#{tid})",
+                min_value=0.0,
+                max_value=100.0,
+                step=1.0,
+                value=float(st.session_state[weights_state_key][tid]),
+                key=f"{key}_w_{tid}",
+            )
+    with cols[1]:
+        if st.button("Equal weights", key=f"{key}_equalize"):
+            even = round(100.0 / max(len(transcripts), 1), 2)
+            for t in transcripts:
+                st.session_state[weights_state_key][int(t.id)] = even
+            st.experimental_rerun()
+
+    total = sum(st.session_state[weights_state_key].values())
+    st.caption(f"Total: {total:.2f}% (must equal 100% to compute)")
+    return st.session_state[weights_state_key]
 
