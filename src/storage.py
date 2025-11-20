@@ -1,0 +1,106 @@
+from __future__ import annotations
+
+from typing import Iterable, List, Optional, Sequence
+
+from sqlalchemy import asc, desc, select
+from sqlalchemy.orm import Session
+
+from .models import Tag, Transcript, transcript_tag_association
+
+
+def create_transcript(
+    session: Session,
+    *,
+    title: str,
+    original_filename: str,
+    storage_location: str,
+    text_content: str,
+    word_count: int,
+    estimated_minutes: float,
+    file_type: str,
+    notes: str = "",
+) -> int:
+    transcript = Transcript(
+        title=title or original_filename,
+        original_filename=original_filename,
+        storage_location=storage_location,
+        text_content=text_content,
+        word_count=word_count,
+        estimated_minutes=float(estimated_minutes),
+        file_type=file_type,
+        notes=notes or "",
+    )
+    session.add(transcript)
+    session.flush()
+    return int(transcript.id)
+
+
+def update_transcript_title(session: Session, transcript_id: int, new_title: str) -> None:
+    stmt = select(Transcript).where(Transcript.id == transcript_id)
+    transcript = session.scalars(stmt).first()
+    if not transcript:
+        return
+    transcript.title = new_title
+    session.add(transcript)
+
+
+def _get_or_create_tags(session: Session, names: Iterable[str]) -> List[Tag]:
+    names_clean = sorted({n.strip() for n in names if n and n.strip()})
+    if not names_clean:
+        return []
+    existing = session.scalars(select(Tag).where(Tag.name.in_(names_clean))).all()
+    by_name = {t.name: t for t in existing}
+    to_create = [n for n in names_clean if n not in by_name]
+    for name in to_create:
+        tag = Tag(name=name)
+        session.add(tag)
+        session.flush()
+        by_name[name] = tag
+    return [by_name[n] for n in names_clean]
+
+
+def set_transcript_tags(session: Session, transcript_id: int, tag_names: Sequence[str]) -> None:
+    stmt = select(Transcript).where(Transcript.id == transcript_id)
+    transcript = session.scalars(stmt).first()
+    if not transcript:
+        return
+    tags = _get_or_create_tags(session, tag_names)
+    transcript.tags = tags
+    session.add(transcript)
+
+
+def delete_transcript(session: Session, transcript_id: int) -> None:
+    transcript = session.get(Transcript, transcript_id)
+    if not transcript:
+        return
+    session.delete(transcript)
+
+
+def list_transcripts(
+    session: Session,
+    *,
+    tag_filters_any: Optional[Sequence[str]] = None,
+    search_title: Optional[str] = None,
+) -> List[Transcript]:
+    stmt = select(Transcript).order_by(desc(Transcript.uploaded_at), asc(Transcript.id))
+    results = session.scalars(stmt).unique().all()
+
+    filtered = results
+    if search_title:
+        needle = search_title.lower()
+        filtered = [t for t in filtered if needle in (t.title or "").lower()]
+    if tag_filters_any:
+        tag_set = {t.strip().lower() for t in tag_filters_any if t.strip()}
+        if tag_set:
+            filtered = [
+                t
+                for t in filtered
+                if any((tag.name or "").lower() in tag_set for tag in t.tags)
+            ]
+    return filtered
+
+
+def get_transcript(session: Session, transcript_id: int) -> Optional[Transcript]:
+    return session.get(Transcript, transcript_id)
+
+
