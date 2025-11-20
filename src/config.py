@@ -16,14 +16,31 @@ def _get_streamlit_secret(key: str) -> Optional[str]:
         return None
 
 
+def _normalize_db_url(url: str) -> str:
+    """
+    Normalize common DB URL issues:
+    - postgres://  -> postgresql://
+    - ensure sslmode=require is present
+    """
+    value = (url or "").strip()
+    if value.startswith("postgres://"):
+        value = "postgresql://" + value[len("postgres://") :]
+    # Prefer explicit driver not required, but allowed. Leave as postgresql://.
+    # Ensure sslmode=require
+    if "sslmode=" not in value:
+        sep = "&" if "?" in value else "?"
+        value = f"{value}{sep}sslmode=require"
+    return value
+
+
 def get_database_url() -> str:
     # Prefer Streamlit secrets on Cloud
     secret_val = _get_streamlit_secret("DATABASE_URL")
     if secret_val:
-        return secret_val
+        return _normalize_db_url(secret_val)
     env_val = os.getenv("DATABASE_URL")
     if env_val:
-        return env_val
+        return _normalize_db_url(env_val)
     raise RuntimeError(
         "DATABASE_URL is not set. Provide it via environment variable or Streamlit secrets."
     )

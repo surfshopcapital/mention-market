@@ -11,7 +11,12 @@ class Base(DeclarativeBase):
     pass
 
 
-_ENGINE = create_engine(get_database_url(), future=True, pool_pre_ping=True)
+_ENGINE = create_engine(
+    get_database_url(),
+    future=True,
+    pool_pre_ping=True,
+    connect_args={"sslmode": "require"},
+)
 _SessionFactory = sessionmaker(bind=_ENGINE, autoflush=False, autocommit=False, expire_on_commit=False, class_=Session)
 
 
