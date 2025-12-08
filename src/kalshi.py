@@ -85,6 +85,22 @@ class KalshiClient:
             data = {"raw": resp.text}
         return resp.status_code, data
 
+    # Debug/raw access
+    def request_debug(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Optional[Dict[str, Any]] = None,
+        json_body: Optional[Dict[str, Any]] = None,
+        timeout: int = 20,
+    ) -> Dict[str, Any]:
+        status, data = self._request(method, path, params=params, json_body=json_body, timeout=timeout)
+        return {
+            "status": status,
+            "data": data,
+        }
+
     # Public methods
 
     def list_series(self, *, limit: int = 100, cursor: Optional[str] = None) -> Dict[str, Any]:
@@ -116,6 +132,20 @@ class KalshiClient:
         if status != 200:
             raise RuntimeError(f"Kalshi markets request failed: {status} {data}")
         return data
+
+    def list_markets_debug(
+        self,
+        *,
+        series_ticker: Optional[str] = None,
+        status_filter: Optional[str] = None,
+        limit: int = 50,
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {"limit": limit}
+        if series_ticker:
+            params["series_ticker"] = series_ticker
+        if status_filter:
+            params["status"] = status_filter
+        return self.request_debug("GET", "/trade-api/v2/markets", params=params)
 
     def find_mention_series_tickers(self) -> List[str]:
         """
