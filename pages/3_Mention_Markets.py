@@ -119,11 +119,6 @@ def main() -> None:
         refresh_sec = st.slider("Auto-refresh interval (seconds)", min_value=0, max_value=300, value=60, step=15)
         _ = st.caption("Set to 0 to disable auto-refresh.")
         manual = st.button("Refresh now", type="primary", use_container_width=True)
-        st.divider()
-        st.subheader("Debug")
-        debug_on = st.checkbox("Show Debug", value=False)
-        search_term = st.text_input("Search term", value="mention", help="Used to filter titles in Debug tab.")
-        series_filter = st.text_input("Series ticker filter (optional)", value="", help="If provided, fetch markets for this series.")
 
     # Build a cache key that updates when user refreshes or interval elapses
     cache_key = "v1"
@@ -138,10 +133,7 @@ def main() -> None:
         bucket = int(_t.time() // max(refresh_sec, 1))
         cache_key = f"v1_{bucket}"
 
-    if debug_on:
-        tab_main, tab_debug = st.tabs(["Markets", "Debug"])
-    else:
-        (tab_main,) = st.tabs(["Markets"])
+    (tab_main,) = st.tabs(["Markets"])
 
     with tab_main:
         try:
@@ -168,9 +160,38 @@ def main() -> None:
 
         if markets:
             groups = _group_by_title(markets)
+            # Deduplicate tickers within each group and drop groups with <= 1 strike
+            filtered_groups = []
+            for g in groups:
+                by_ticker = {}
+                for m in g["items"]:
+                    t = m.get("ticker")
+                    if t and t not in by_ticker:
+                        by_ticker[t] = m
+                unique_items = list(by_ticker.values())
+                if len(unique_items) <= 1:
+                    continue
+                g_clean = {
+                    **g,
+                    "items": unique_items,
+                    "num_strikes": len(unique_items),
+                    "total_volume": sum(int(m.get("volume") or 0) for m in unique_items),
+                }
+                filtered_groups.append(g_clean)
+            groups = filtered_groups
+
+            # Top summary bar
+            total_markets = len(groups)
+            total_volume = sum(int(g["total_volume"]) for g in groups)
+            s1, s2 = st.columns(2)
+            with s1:
+                st.metric("Total markets", total_markets)
+            with s2:
+                st.metric("Total volume", f"{total_volume:,}")
+
             st.subheader("Markets")
             # Render cards in grid
-            cols_per_row = 3
+            cols_per_row = 4
             for i in range(0, len(groups), cols_per_row):
                 row = groups[i : i + cols_per_row]
                 cols = st.columns(len(row))
@@ -187,7 +208,7 @@ def main() -> None:
                             st.caption(f"End: {g['end_date']}")
                             if st.button("View strikes", key=f"view_{i}_{g['title']}"):
                                 st.session_state["mm_selected_title"] = g["title"]
-                                st.experimental_rerun()
+                                st.rerun()
 
             # Details table below cards
             selected_title = st.session_state.get("mm_selected_title")
@@ -221,58 +242,6 @@ def main() -> None:
 
         with st.expander("Raw data", expanded=False):
             st.json(markets or [])
-
-    if debug_on:
-        with tab_debug:
-            client = KalshiClient()
-            st.subheader("Series probe")
-            st.caption(f"Base URL: {get_kalshi_api_base_url()}")
-            try:
-                series_resp = client.request_debug("GET", "/trade-api/v2/series", params={"limit": 200})
-                st.write(f"Series status: {series_resp.get('status')}")
-                series_items = series_resp.get("data", {}).get("series") or series_resp.get("data") or series_resp.get("series") or []
-                if isinstance(series_items, dict) and "series" in series_items:
-                    series_items = series_items["series"]
-                s_rows = [{"ticker": s.get("ticker"), "title": s.get("title")} for s in (series_items or [])]
-                s_df = pd.DataFrame(s_rows)
-                if not s_df.empty:
-                    if search_term.strip():
-                        mask = s_df["title"].str.contains(search_term, case=False, na=False) | s_df["ticker"].str.contains(search_term, case=False, na=False)
-                        st.write(f"Series matching '{search_term}':")
-                        st.dataframe(s_df[mask], use_container_width=True, hide_index=True)
-                    with st.expander("All series (first 200)"):
-                        st.dataframe(s_df, use_container_width=True, hide_index=True)
-                else:
-                    st.info("No series returned.")
-            except Exception as e:
-                st.error(f"Series request error: {e}")
-
-            st.divider()
-            st.subheader("Markets probe")
-            q_params = {"limit": 200, "status": "open"}
-            if series_filter.strip():
-                q_params["series_ticker"] = series_filter.strip()
-            try:
-                markets_resp = client.request_debug("GET", "/trade-api/v2/markets", params=q_params)
-                st.write(f"Markets status: {markets_resp.get('status')}")
-                mk_items = markets_resp.get("data", {}).get("markets") or markets_resp.get("markets") or markets_resp.get("data") or []
-                if isinstance(mk_items, dict) and "markets" in mk_items:
-                    mk_items = mk_items["markets"]
-                m_rows = [{"ticker": m.get("ticker"), "title": m.get("title"), "status": m.get("status"), "category": m.get("category")} for m in (mk_items or [])]
-                m_df = pd.DataFrame(m_rows)
-                if not m_df.empty:
-                    if search_term.strip():
-                        mask = m_df["title"].str.contains(search_term, case=False, na=False)
-                        st.write(f"Markets matching '{search_term}':")
-                        st.dataframe(m_df[mask], use_container_width=True, hide_index=True)
-                    with st.expander("Categories summary"):
-                        st.dataframe(m_df["category"].fillna("").str.lower().value_counts(), use_container_width=True)
-                    with st.expander("All markets sample (first 200)"):
-                        st.dataframe(m_df.head(200), use_container_width=True, hide_index=True)
-                else:
-                    st.info("No markets returned.")
-            except Exception as e:
-                st.error(f"Markets request error: {e}")
 
 
 if __name__ == "__main__":
