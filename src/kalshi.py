@@ -260,30 +260,37 @@ class KalshiClient(KalshiHistoryMixin):
         if series_tickers:
             for stkr in series_tickers:
                 try:
-                    data = self.list_markets(series_ticker=stkr, status_filter="active", limit=200)
+                    data = self.list_markets(series_ticker=stkr, status_filter="active", limit=500)
                     markets = data.get("markets", []) or data.get("data", []) or []
                     mention_markets.extend(markets)
                 except Exception:
                     # Skip problematic series
                     continue
-            # Deduplicate by ticker if present
+            # Deduplicate and filter category first
             by_ticker: Dict[str, Dict[str, Any]] = {}
             for m in mention_markets:
                 t = m.get("ticker")
                 if t and t not in by_ticker:
                     by_ticker[t] = m
             values = list(by_ticker.values())
-            # Prefer category 'mentions' if present, else include heuristics
             cat_filtered = [m for m in values if str(m.get("category", "")).lower() == "mentions"]
+            # Fallback if empty after series query: global fetch + category/heuristic filter
+            if not cat_filtered and not values:
+                try:
+                    data = self.list_markets(status_filter="active", limit=500)
+                    all_markets = data.get("markets", []) or data.get("data", []) or []
+                    filtered_cat = [m for m in all_markets if str(m.get("category", "")).lower() == "mentions"]
+                    return filtered_cat or _filter_mention_like(all_markets)
+                except Exception:
+                    return []
             if cat_filtered:
                 return cat_filtered
             return _filter_mention_like(values)
 
-        # Fallback: fetch a broad markets page and filter by title text
+        # No series found: global fetch
         try:
             data = self.list_markets(status_filter="active", limit=500)
             all_markets = data.get("markets", []) or data.get("data", []) or []
-            # Prefer category filter first; otherwise apply heuristics
             filtered_cat = [m for m in all_markets if str(m.get("category", "")).lower() == "mentions"]
             return filtered_cat or _filter_mention_like(all_markets)
         except Exception:
