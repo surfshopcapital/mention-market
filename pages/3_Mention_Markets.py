@@ -50,6 +50,65 @@ def _fetch_mention_markets_cached(cache_key: str) -> list[dict]:
     return client.list_mention_markets()
 
 
+def _safe_parse_dt(value: object) -> str:
+    try:
+        ts = pd.to_datetime(value, utc=True, errors="coerce")
+        if pd.isna(ts):
+            return ""
+        # Render friendly, UTC label
+        return ts.strftime("%b %d, %Y %H:%M UTC")
+    except Exception:
+        return str(value or "")
+
+
+def _derive_description(m: dict) -> str:
+    # Prefer explicit fields; fallback to last token of ticker
+    for k in ("subtitle", "yes_sub_title", "no_sub_title"):
+        v = m.get(k)
+        if v:
+            return str(v)
+    t = str(m.get("ticker", ""))
+    if "-" in t:
+        return t.split("-")[-1]
+    return ""
+
+
+def _group_by_title(markets: list[dict]) -> list[dict]:
+    by_title: dict[str, list[dict]] = {}
+    for m in markets:
+        title = str(m.get("title", "")).strip()
+        if not title:
+            # If title missing, group by event_ticker as fallback
+            title = str(m.get("event_ticker") or m.get("ticker") or "Unknown").strip()
+        by_title.setdefault(title, []).append(m)
+    groups = []
+    for title, items in by_title.items():
+        total_vol = sum(int(m.get("volume") or 0) for m in items)
+        # Use the latest close_time among strikes
+        end_times = [m.get("close_time") or m.get("end_date") or m.get("expiry_time") for m in items]
+        # Choose max if available
+        end_iso = None
+        try:
+            parsed = pd.to_datetime([e for e in end_times if e], utc=True, errors="coerce")
+            parsed = [p for p in parsed if not pd.isna(p)]
+            if parsed:
+                end_iso = max(parsed).isoformat()
+        except Exception:
+            end_iso = None
+        groups.append(
+            {
+                "title": title,
+                "num_strikes": len(items),
+                "total_volume": total_vol,
+                "end_date": _safe_parse_dt(end_iso or (end_times[0] if end_times else "")),
+                "items": items,
+            }
+        )
+    # Sort by total volume desc
+    groups.sort(key=lambda g: int(g.get("total_volume") or 0), reverse=True)
+    return groups
+
+
 def main() -> None:
     st.set_page_config(page_title="Mention Markets", page_icon="💬", layout="wide")
     st.title("Mention Markets")
@@ -92,10 +151,7 @@ def main() -> None:
             st.error(f"Failed to load markets: {e}")
             return
 
-        if markets:
-            df = _to_display_df(markets)
-            st.dataframe(df, use_container_width=True, hide_index=True)
-        else:
+        if not markets:
             st.info("No mention markets found. Showing a sample of active markets to verify connectivity.")
             try:
                 client = KalshiClient()
@@ -104,15 +160,67 @@ def main() -> None:
                 if isinstance(mk_items, dict) and "markets" in mk_items:
                     mk_items = mk_items["markets"]
                 if mk_items:
-                    df_any = _to_display_df(list(mk_items)[:50])
-                    st.dataframe(df_any, use_container_width=True, hide_index=True)
+                    markets = list(mk_items)[:50]
                 else:
                     st.warning("Active markets sample request returned no items.")
             except Exception as e:
                 st.error(f"Active markets sample error: {e}")
 
-        with st.expander("Raw data"):
-            st.json(markets)
+        if markets:
+            groups = _group_by_title(markets)
+            st.subheader("Markets")
+            # Render cards in grid
+            cols_per_row = 3
+            for i in range(0, len(groups), cols_per_row):
+                row = groups[i : i + cols_per_row]
+                cols = st.columns(len(row))
+                for col, g in zip(cols, row):
+                    with col:
+                        card = st.container(border=True)
+                        with card:
+                            st.markdown(f"**{g['title']}**")
+                            c1, c2 = st.columns(2)
+                            with c1:
+                                st.caption(f"Strikes: {g['num_strikes']}")
+                            with c2:
+                                st.caption(f"Volume: {int(g['total_volume']):,}")
+                            st.caption(f"End: {g['end_date']}")
+                            if st.button("View strikes", key=f"view_{i}_{g['title']}"):
+                                st.session_state["mm_selected_title"] = g["title"]
+                                st.experimental_rerun()
+
+            # Details table below cards
+            selected_title = st.session_state.get("mm_selected_title")
+            if selected_title:
+                st.divider()
+                st.subheader(f"Strikes – {selected_title}")
+                group_map = {g["title"]: g for g in groups}
+                g = group_map.get(selected_title)
+                if g:
+                    rows = []
+                    for m in g["items"]:
+                        rows.append(
+                            {
+                                "Ticker": m.get("ticker"),
+                                "Description": _derive_description(m),
+                                "Yes Bid (¢)": m.get("yes_bid"),
+                                "Yes Ask (¢)": m.get("yes_ask"),
+                                "No Bid (¢)": m.get("no_bid"),
+                                "No Ask (¢)": m.get("no_ask"),
+                                "Volume": m.get("volume"),
+                                "Open Interest": m.get("open_interest"),
+                                "End Date": m.get("close_time") or m.get("end_date") or m.get("expiry_time"),
+                            }
+                        )
+                    df = pd.DataFrame(rows)
+                    if "End Date" in df.columns:
+                        df["End Date"] = df["End Date"].apply(_safe_parse_dt)
+                    st.dataframe(df, use_container_width=True, hide_index=True)
+                else:
+                    st.info("No strikes available for the selected card.")
+
+        with st.expander("Raw data", expanded=False):
+            st.json(markets or [])
 
     if debug_on:
         with tab_debug:
