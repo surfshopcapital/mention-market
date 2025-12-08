@@ -79,7 +79,10 @@ def main() -> None:
         bucket = int(_t.time() // max(refresh_sec, 1))
         cache_key = f"v1_{bucket}"
 
-    tab_main, tab_debug = st.tabs(["Markets", "Debug"] if debug_on else ["Markets"])
+    if debug_on:
+        tab_main, tab_debug = st.tabs(["Markets", "Debug"])
+    else:
+        (tab_main,) = st.tabs(["Markets"])
 
     with tab_main:
         try:
