@@ -91,7 +91,11 @@ def main() -> None:
         return
 
     with st.spinner("Searching historical markets..."):
-        data = _fetch_history(q.strip().lower(), months)
+        try:
+            data = _fetch_history(q.strip().lower(), int(months))
+        except Exception as e:
+            st.error(f"Failed to fetch history: {e}")
+            return
     groups = _group_by_title(data)
 
     # Bulk tag fetch for first tickers of each group
