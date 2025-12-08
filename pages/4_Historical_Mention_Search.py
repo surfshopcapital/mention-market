@@ -180,7 +180,7 @@ def main() -> None:
             df = pd.DataFrame(rows)
             if "End" in df.columns:
                 df["End"] = df["End"].dt.strftime("%b %d, %Y %H:%M UTC")
-            st.dataframe(df[["Subtitle", "Final volume", "Result", "End", "Ticker"]], use_container_width=True, hide_index=True)
+            st.dataframe(df[["Subtitle", "Final volume", "Result", "End", "Ticker"]], width="stretch", hide_index=True)
 
 
 if __name__ == "__main__":

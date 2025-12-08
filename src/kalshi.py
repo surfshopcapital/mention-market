@@ -17,6 +17,29 @@ from .config import (
 )
 
 
+class KalshiHistoryMixin:
+    def list_mention_markets_historical(self, *, text_term: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        List historical (closed/settled) mention-like markets, optionally filtered by text term.
+        """
+        # Fetch closed and settled pages
+        closed = self.list_markets_paginated(status_filter="closed", per_page=500, max_pages=5)
+        settled = self.list_markets_paginated(status_filter="settled", per_page=500, max_pages=5)
+        all_hist = closed + settled
+        # Filter mention-like
+        mention_like = _filter_mention_like(all_hist)
+        # Optional text filter
+        if text_term:
+            mention_like = [m for m in mention_like if _contains_term(m, text_term)]
+        # Deduplicate by ticker
+        by_ticker: Dict[str, Dict[str, Any]] = {}
+        for m in mention_like:
+            t = m.get("ticker")
+            if t and t not in by_ticker:
+                by_ticker[t] = m
+        return list(by_ticker.values())
+
+
 class KalshiClient(KalshiHistoryMixin):
     """
     Minimal Kalshi HTTP client with RSA-PSS request signing.
@@ -301,27 +324,7 @@ def _contains_term(m: Dict[str, Any], term: str) -> bool:
     return needle in hay
 
 
-class KalshiHistoryMixin:
-    def list_mention_markets_historical(self, *, text_term: Optional[str] = None) -> List[Dict[str, Any]]:
-        """
-        List historical (closed/settled) mention-like markets, optionally filtered by text term.
-        """
-        # Fetch closed and settled pages
-        closed = self.list_markets_paginated(status_filter="closed", per_page=500, max_pages=5)
-        settled = self.list_markets_paginated(status_filter="settled", per_page=500, max_pages=5)
-        all_hist = closed + settled
-        # Filter mention-like
-        mention_like = _filter_mention_like(all_hist)
-        # Optional text filter
-        if text_term:
-            mention_like = [m for m in mention_like if _contains_term(m, text_term)]
-        # Deduplicate by ticker
-        by_ticker: Dict[str, Dict[str, Any]] = {}
-        for m in mention_like:
-            t = m.get("ticker")
-            if t and t not in by_ticker:
-                by_ticker[t] = m
-        return list(by_ticker.values())
+
 
 
 

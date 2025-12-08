@@ -365,7 +365,8 @@ def main() -> None:
                         df["End Date"] = df["End Date"].apply(_safe_parse_dt)
                     if "Yes Bid (¢)" in df.columns:
                         df = df.sort_values(by="Yes Bid (¢)", ascending=False, na_position="last")
-                    st.dataframe(df, use_container_width=True, hide_index=True)
+                    st.dataframe(df, width="stretch", hide_index=True)
+                    st.dataframe(df, width="stretch", hide_index=True)
                     strikes: list[str] = []
                     for term in df.get("Description", []).tolist() if "Description" in df.columns else []:
                         t = str(term or "").strip()
