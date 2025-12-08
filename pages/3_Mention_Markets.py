@@ -238,6 +238,7 @@ def main() -> None:
             for i in range(0, len(groups), cols_per_row):
                 row = groups[i : i + cols_per_row]
                 cols = st.columns(len(row))
+                selected_group_in_row = None
                 for col, g in zip(cols, row):
                     with col:
                         # Color palette based on time-to-end
@@ -272,77 +273,85 @@ def main() -> None:
                             unsafe_allow_html=True,
                         )
 
-                        btn_cols = st.columns([1, 1])
-                        with btn_cols[0]:
-                            # Stable group key based on first ticker (fallback to index + title)
-                            first_ticker = g["items"][0].get("ticker") if g["items"] else ""
-                            group_key = (first_ticker or f"{i}_{abs(hash(g['title']))}").replace(" ", "_")
+                        # Controls row: [View Strikes] [Add tag] [tag input]
+                        # Stable group key based on first ticker (fallback to index + title)
+                        first_ticker = g["items"][0].get("ticker") if g["items"] else ""
+                        group_key = (first_ticker or f"{i}_{abs(hash(g['title']))}").replace(" ", "_")
+                        ctrl_cols = st.columns([1, 1, 3])
+                        with ctrl_cols[0]:
                             if st.button("View strikes", key=f"view_{group_key}"):
                                 st.session_state["mm_selected_title"] = g["title"]
                                 st.session_state["mm_scrolled"] = False
                                 st.rerun()
-                        with btn_cols[1]:
-                            # Tagging UI
-                            existing_tags = []
-                            if first_ticker:
-                                try:
-                                    with get_session() as sess:
-                                        existing_tags = get_market_tags(sess, str(first_ticker))
-                                except Exception:
-                                    existing_tags = []
-                            tag_val = st.text_input("Tag", value="", key=f"tag_{group_key}")
+                        with ctrl_cols[1]:
                             apply = st.button("Add tag", key=f"add_tag_{group_key}", disabled=(not first_ticker))
-                            if apply and tag_val.strip() and first_ticker:
-                                try:
-                                    with get_session() as sess:
-                                        updated = add_market_tags(sess, str(first_ticker), [tag_val.strip()])
-                                    existing_tags = updated
-                                    st.session_state[f"tags_{group_key}"] = updated
-                                    st.success("Tag saved")
-                                except Exception as e:
-                                    st.warning("Failed to save tag.")
-                            if st.session_state.get(f"tags_{group_key}"):
-                                existing_tags = st.session_state[f"tags_{group_key}"]
-                            if existing_tags:
-                                st.caption("Tags: " + ", ".join(sorted(existing_tags)))
+                        with ctrl_cols[2]:
+                            tag_val = st.text_input(
+                                "Tag",
+                                value="",
+                                key=f"tag_{group_key}",
+                                label_visibility="collapsed",
+                                placeholder="Add tag",
+                            )
 
-                            # Inline strikes table below selected card
-                            is_selected = st.session_state.get("mm_selected_title") == g["title"]
-                            if is_selected:
-                                rows = []
-                                for m in g["items"]:
-                                    rows.append(
-                                        {
-                                            "Ticker": m.get("ticker"),
-                                            "Description": _derive_description(m),
-                                            "Yes Bid (¢)": m.get("yes_bid"),
-                                            "Yes Ask (¢)": m.get("yes_ask"),
-                                            "No Bid (¢)": m.get("no_bid"),
-                                            "No Ask (¢)": m.get("no_ask"),
-                                            "Volume": m.get("volume"),
-                                            "Open Interest": m.get("open_interest"),
-                                            "End Date": m.get("close_time") or m.get("end_date") or m.get("expiry_time"),
-                                        }
-                                    )
-                                df = pd.DataFrame(rows)
-                                if "End Date" in df.columns:
-                                    df["End Date"] = df["End Date"].apply(_safe_parse_dt)
-                                if "Yes Bid (¢)" in df.columns:
-                                    df = df.sort_values(by="Yes Bid (¢)", ascending=False, na_position="last")
-                                st.dataframe(df, use_container_width=True, hide_index=True)
+                        # Tag persistence (after controls for layout)
+                        existing_tags = []
+                        if first_ticker:
+                            try:
+                                with get_session() as sess:
+                                    existing_tags = get_market_tags(sess, str(first_ticker))
+                            except Exception:
+                                existing_tags = []
+                        if apply and tag_val.strip() and first_ticker:
+                            try:
+                                with get_session() as sess:
+                                    updated = add_market_tags(sess, str(first_ticker), [tag_val.strip()])
+                                existing_tags = updated
+                                st.session_state[f"tags_{group_key}"] = updated
+                                st.session_state[f"tag_{group_key}"] = ""  # clear input
+                                st.success("Tag saved")
+                            except Exception:
+                                st.warning("Failed to save tag.")
+                        if st.session_state.get(f"tags_{group_key}"):
+                            existing_tags = st.session_state[f"tags_{group_key}"]
+                        if existing_tags:
+                            st.caption("Tags: " + ", ".join(sorted(existing_tags)))
 
-                                # Strikes one-row comma-separated list
-                                strikes: list[str] = []
-                                for term in df.get("Description", []).tolist() if "Description" in df.columns else []:
-                                    t = str(term or "").strip()
-                                    if t and t not in strikes:
-                                        strikes.append(t)
-                                if strikes:
-                                    st.caption("Strikes list")
-                                    st.markdown(", ".join(strikes))
-                                else:
-                                    st.caption("Strikes list")
-                                    st.markdown("—")
+                        # Mark if this group is selected; table will render full width below the row
+                        if st.session_state.get("mm_selected_title") == g["title"]:
+                            selected_group_in_row = g
+
+                # Full-width strikes table for the selected card in this row
+                if selected_group_in_row:
+                    st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+                    rows = []
+                    for m in selected_group_in_row["items"]:
+                        rows.append(
+                            {
+                                "Ticker": m.get("ticker"),
+                                "Description": _derive_description(m),
+                                "Yes Bid (¢)": m.get("yes_bid"),
+                                "Yes Ask (¢)": m.get("yes_ask"),
+                                "No Bid (¢)": m.get("no_bid"),
+                                "No Ask (¢)": m.get("no_ask"),
+                                "Volume": m.get("volume"),
+                                "Open Interest": m.get("open_interest"),
+                                "End Date": m.get("close_time") or m.get("end_date") or m.get("expiry_time"),
+                            }
+                        )
+                    df = pd.DataFrame(rows)
+                    if "End Date" in df.columns:
+                        df["End Date"] = df["End Date"].apply(_safe_parse_dt)
+                    if "Yes Bid (¢)" in df.columns:
+                        df = df.sort_values(by="Yes Bid (¢)", ascending=False, na_position="last")
+                    st.dataframe(df, use_container_width=True, hide_index=True)
+                    strikes: list[str] = []
+                    for term in df.get("Description", []).tolist() if "Description" in df.columns else []:
+                        t = str(term or "").strip()
+                        if t and t not in strikes:
+                            strikes.append(t)
+                    st.caption("Strikes list")
+                    st.markdown(", ".join(strikes) if strikes else "—")
 
         # Raw data section removed per request
 
