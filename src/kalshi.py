@@ -124,7 +124,7 @@ class KalshiClient:
         if series_ticker:
             params["series_ticker"] = series_ticker
         if status_filter:
-            # Common values: 'active', 'open', 'closed'; fall back if unsupported
+            # Supported values: 'unopened', 'open', 'closed', 'settled'
             params["status"] = status_filter
         if cursor:
             params["cursor"] = cursor
@@ -173,7 +173,7 @@ class KalshiClient:
     def list_mention_markets(self) -> List[Dict[str, Any]]:
         """
         Attempts to list markets for 'Mention' series. Falls back to filtering all markets
-        by title containing 'mention' if series lookup fails.
+        by category=='mentions' or title containing 'mention' if series lookup fails.
         """
         mention_markets: List[Dict[str, Any]] = []
         try:
@@ -184,7 +184,7 @@ class KalshiClient:
         if series_tickers:
             for stkr in series_tickers:
                 try:
-                    data = self.list_markets(series_ticker=stkr, status_filter="active", limit=200)
+                    data = self.list_markets(series_ticker=stkr, status_filter="open", limit=200)
                     markets = data.get("markets", []) or data.get("data", []) or []
                     mention_markets.extend(markets)
                 except Exception:
@@ -197,12 +197,20 @@ class KalshiClient:
                 if t and t not in by_ticker:
                     by_ticker[t] = m
             if by_ticker:
-                return list(by_ticker.values())
+                # If we have category info, keep only mentions if available
+                values = list(by_ticker.values())
+                cat_filtered = [m for m in values if str(m.get("category", "")).lower() == "mentions"]
+                return cat_filtered or values
 
         # Fallback: fetch a broad markets page and filter by title text
         try:
-            data = self.list_markets(status_filter="active", limit=200)
+            data = self.list_markets(status_filter="open", limit=500)
             all_markets = data.get("markets", []) or data.get("data", []) or []
+            # Prefer category filter first
+            filtered = [m for m in all_markets if str(m.get("category", "")).lower() == "mentions"]
+            if filtered:
+                return filtered
+            # Fallback to title substring
             filtered = []
             for m in all_markets:
                 title = str(m.get("title", "")).lower()

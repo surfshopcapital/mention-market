@@ -99,7 +99,7 @@ def main() -> None:
             st.info("No mention markets found. Showing a sample of active markets to verify connectivity.")
             try:
                 client = KalshiClient()
-                any_resp = client.request_debug("GET", "/trade-api/v2/markets", params={"limit": 50, "status": "active"})
+                any_resp = client.request_debug("GET", "/trade-api/v2/markets", params={"limit": 50, "status": "open"})
                 mk_items = any_resp.get("data", {}).get("markets") or any_resp.get("markets") or any_resp.get("data") or []
                 if isinstance(mk_items, dict) and "markets" in mk_items:
                     mk_items = mk_items["markets"]
@@ -141,7 +141,7 @@ def main() -> None:
 
             st.divider()
             st.subheader("Markets probe")
-            q_params = {"limit": 200, "status": "active"}
+            q_params = {"limit": 200, "status": "open"}
             if series_filter.strip():
                 q_params["series_ticker"] = series_filter.strip()
             try:
@@ -150,13 +150,15 @@ def main() -> None:
                 mk_items = markets_resp.get("data", {}).get("markets") or markets_resp.get("markets") or markets_resp.get("data") or []
                 if isinstance(mk_items, dict) and "markets" in mk_items:
                     mk_items = mk_items["markets"]
-                m_rows = [{"ticker": m.get("ticker"), "title": m.get("title"), "status": m.get("status")} for m in (mk_items or [])]
+                m_rows = [{"ticker": m.get("ticker"), "title": m.get("title"), "status": m.get("status"), "category": m.get("category")} for m in (mk_items or [])]
                 m_df = pd.DataFrame(m_rows)
                 if not m_df.empty:
                     if search_term.strip():
                         mask = m_df["title"].str.contains(search_term, case=False, na=False)
                         st.write(f"Markets matching '{search_term}':")
                         st.dataframe(m_df[mask], use_container_width=True, hide_index=True)
+                    with st.expander("Categories summary"):
+                        st.dataframe(m_df["category"].fillna("").str.lower().value_counts(), use_container_width=True)
                     with st.expander("All markets sample (first 200)"):
                         st.dataframe(m_df.head(200), use_container_width=True, hide_index=True)
                 else:

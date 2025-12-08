@@ -59,7 +59,7 @@ def get_kalshi_api_base_url() -> str:
     """
     Returns the Kalshi API base URL.
     Prefer Streamlit secrets, then environment variable KALSHI_API_BASE_URL,
-    defaulting to https://api.kalshi.com for production.
+    defaulting to https://api.elections.kalshi.com for production.
     """
     secret_val = _get_streamlit_secret("KALSHI_API_BASE_URL")
     if secret_val:
@@ -67,7 +67,7 @@ def get_kalshi_api_base_url() -> str:
     env_val = os.getenv("KALSHI_API_BASE_URL")
     if env_val:
         return env_val.strip()
-    return "https://api.kalshi.com"
+    return "https://api.elections.kalshi.com"
 
 
 def get_kalshi_api_key_id() -> str:
