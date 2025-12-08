@@ -149,7 +149,8 @@ class KalshiClient:
 
     def find_mention_series_tickers(self) -> List[str]:
         """
-        Heuristic to find 'Mention' series. Looks for 'mention' in series title or ticker.
+        Heuristic to find 'Mention-like' series. Looks for 'mention', 'say', or 'speech'
+        in series title or ticker.
         """
         tickers: List[str] = []
         data = self.list_series(limit=200)
@@ -157,7 +158,14 @@ class KalshiClient:
         for s in items:
             title = str(s.get("title", "")).lower()
             ticker = str(s.get("ticker", "")).lower()
-            if "mention" in title or "mention" in ticker:
+            if (
+                "mention" in title
+                or "mention" in ticker
+                or " say " in f" {title} "
+                or "say" in ticker
+                or "speech" in title
+                or "speech" in ticker
+            ):
                 t = s.get("ticker")
                 if t:
                     tickers.append(t)
@@ -172,8 +180,8 @@ class KalshiClient:
 
     def list_mention_markets(self) -> List[Dict[str, Any]]:
         """
-        Attempts to list markets for 'Mention' series. Falls back to filtering all markets
-        by category=='mentions' or title containing 'mention' if series lookup fails.
+        Attempts to list markets for 'Mention-like' series. Falls back to filtering all markets
+        by category=='mentions' or text/ticker heuristics that catch "mention" and "say" markets.
         """
         mention_markets: List[Dict[str, Any]] = []
         try:
@@ -196,29 +204,52 @@ class KalshiClient:
                 t = m.get("ticker")
                 if t and t not in by_ticker:
                     by_ticker[t] = m
-            if by_ticker:
-                # If we have category info, keep only mentions if available
-                values = list(by_ticker.values())
-                cat_filtered = [m for m in values if str(m.get("category", "")).lower() == "mentions"]
-                return cat_filtered or values
+            values = list(by_ticker.values())
+            # Prefer category 'mentions' if present, else include heuristics
+            cat_filtered = [m for m in values if str(m.get("category", "")).lower() == "mentions"]
+            if cat_filtered:
+                return cat_filtered
+            return _filter_mention_like(values)
 
         # Fallback: fetch a broad markets page and filter by title text
         try:
             data = self.list_markets(status_filter="open", limit=500)
             all_markets = data.get("markets", []) or data.get("data", []) or []
-            # Prefer category filter first
-            filtered = [m for m in all_markets if str(m.get("category", "")).lower() == "mentions"]
-            if filtered:
-                return filtered
-            # Fallback to title substring
-            filtered = []
-            for m in all_markets:
-                title = str(m.get("title", "")).lower()
-                if "mention" in title:
-                    filtered.append(m)
-            return filtered
+            # Prefer category filter first; otherwise apply heuristics
+            filtered_cat = [m for m in all_markets if str(m.get("category", "")).lower() == "mentions"]
+            return filtered_cat or _filter_mention_like(all_markets)
         except Exception:
             return []
+
+
+def _filter_mention_like(markets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Flexible filter to capture 'mention' and 'say' style markets.
+    Includes any market where:
+      - category == mentions OR
+      - title contains 'mention' or 'say' OR
+      - ticker/event_ticker/series_ticker contains 'MENTION' or 'SAY'
+    """
+    results: List[Dict[str, Any]] = []
+    for m in markets:
+        category = str(m.get("category", "")).lower()
+        title = str(m.get("title", "")).lower()
+        ticker = str(m.get("ticker", "")).lower()
+        event_ticker = str(m.get("event_ticker", "")).lower()
+        series_ticker = str(m.get("series_ticker", "")).lower()
+        if (
+            category == "mentions"
+            or "mention" in title
+            or " say " in f" {title} "
+            or "mention" in ticker
+            or "say" in ticker
+            or "mention" in event_ticker
+            or "say" in event_ticker
+            or "mention" in series_ticker
+            or "say" in series_ticker
+        ):
+            results.append(m)
+    return results
 
 
 

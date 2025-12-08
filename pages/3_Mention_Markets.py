@@ -203,7 +203,17 @@ def main() -> None:
         if markets:
             # Cache the grouped structure by a stable JSON key for speed on reruns
             markets_key = hashlib.md5(json.dumps(markets, sort_keys=True).encode("utf-8")).hexdigest()
-            groups = _prepare_groups_cached(markets_key, markets)
+            # Reuse groups from session if payload hasn't changed to make card clicks instantaneous
+            if (
+                st.session_state.get("mm_groups_key") == markets_key
+                and isinstance(st.session_state.get("mm_groups"), list)
+            ):
+                groups = st.session_state["mm_groups"]
+            else:
+                groups = _prepare_groups_cached(markets_key, markets)
+                st.session_state["mm_groups_key"] = markets_key
+                st.session_state["mm_groups"] = groups
+                st.session_state["mm_group_map"] = {g["title"]: g for g in groups}
 
             # Top summary bar
             total_markets = len(groups)
@@ -255,7 +265,8 @@ def main() -> None:
                     st.session_state["mm_scrolled"] = True
 
                 st.subheader(f"Strikes – {selected_title}")
-                group_map = {g["title"]: g for g in groups}
+                group_map = st.session_state.get("mm_group_map") or {g["title"]: g for g in groups}
+                st.session_state["mm_group_map"] = group_map
                 g = group_map.get(selected_title)
                 if g:
                     rows = []
