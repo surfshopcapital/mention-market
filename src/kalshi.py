@@ -18,20 +18,21 @@ from .config import (
 
 
 class KalshiHistoryMixin:
-    def list_mention_markets_historical(self, *, text_term: Optional[str] = None) -> List[Dict[str, Any]]:
+    def list_mention_markets_historical(self, *, text_term: Optional[str] = None, months: int = 12) -> List[Dict[str, Any]]:
         """
-        List historical (closed/settled) mention-like markets, optionally filtered by text term.
+        List historical (closed/settled/determined) mention-like markets for the last N months,
+        optionally filtered by text term.
         """
-        # Fetch closed and settled pages
-        closed = self.list_markets_paginated(status_filter="closed", per_page=500, max_pages=5)
-        settled = self.list_markets_paginated(status_filter="settled", per_page=500, max_pages=5)
-        all_hist = closed + settled
-        # Filter mention-like
+        import pandas as _pd
+
+        earliest_ts = int((_pd.Timestamp.utcnow() - _pd.Timedelta(days=30 * max(months, 1))).timestamp())
+        closed = self.list_markets_paginated(status_filter="closed", per_page=500, max_pages=20, earliest_close_ts=earliest_ts)
+        settled = self.list_markets_paginated(status_filter="settled", per_page=500, max_pages=20, earliest_close_ts=earliest_ts)
+        determined = self.list_markets_paginated(status_filter="determined", per_page=500, max_pages=20, earliest_close_ts=earliest_ts)
+        all_hist = closed + settled + determined
         mention_like = _filter_mention_like(all_hist)
-        # Optional text filter
         if text_term:
             mention_like = [m for m in mention_like if _contains_term(m, text_term)]
-        # Deduplicate by ticker
         by_ticker: Dict[str, Dict[str, Any]] = {}
         for m in mention_like:
             t = m.get("ticker")
@@ -162,10 +163,13 @@ class KalshiClient(KalshiHistoryMixin):
         series_ticker: Optional[str] = None,
         status_filter: Optional[str] = None,
         per_page: int = 500,
-        max_pages: int = 5,
+        max_pages: int = 20,
+        earliest_close_ts: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """
         Fetch multiple pages of markets to cover historical queries.
+        If earliest_close_ts (epoch seconds) is provided, paginate until we reach
+        markets older than that threshold or pages are exhausted.
         """
         all_items: List[Dict[str, Any]] = []
         cursor: Optional[str] = None
@@ -176,6 +180,17 @@ class KalshiClient(KalshiHistoryMixin):
                 break
             all_items.extend(items)
             cursor = data.get("cursor")
+            if earliest_close_ts is not None:
+                import pandas as _pd
+                # find oldest close timestamp in this page
+                ts_list = []
+                for m in items:
+                    t = m.get("close_time") or m.get("end_date") or m.get("expiry_time") or m.get("latest_expiration_time")
+                    ts = _pd.to_datetime(t, utc=True, errors="coerce")
+                    if ts is not None and not _pd.isna(ts):
+                        ts_list.append(int(ts.timestamp()))
+                if ts_list and min(ts_list) < int(earliest_close_ts):
+                    break
             if not cursor:
                 break
         # Deduplicate by ticker

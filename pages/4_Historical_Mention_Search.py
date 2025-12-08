@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from typing import List, Dict
 
 import pandas as pd
@@ -60,10 +58,10 @@ def _group_by_title(markets: List[dict]) -> List[dict]:
     return groups
 
 
-@st.cache_data(show_spinner=False, ttl=900)
-def _fetch_history(term: str) -> List[dict]:
+@st.cache_data(show_spinner=False, ttl=300)
+def _fetch_history(term: str, months: int) -> List[dict]:
     client = KalshiClient()
-    return client.list_mention_markets_historical(text_term=term)
+    return client.list_mention_markets_historical(text_term=term, months=months)
 
 
 def main() -> None:
@@ -81,21 +79,19 @@ def main() -> None:
         q = st.text_input("Search text (title/series/ticker contains)", value="", placeholder="e.g., bessent, trump")
     with right:
         tag_q = st.text_input("Filter by tag (optional)", value="", placeholder="e.g., earnings")
-    top_controls = st.columns([1, 1, 2])
+    top_controls = st.columns([1, 2])
     with top_controls[0]:
         manual = st.button("Search / Refresh", type="primary", use_container_width=True)
     with top_controls[1]:
-        ttl_min = st.selectbox("Cache TTL", options=[5, 15, 60], index=0, help="Minutes to cache results")
+        months = st.selectbox("Lookback (months)", options=[3, 6, 12], index=2)
 
-    # Compute cache key
-    ttl_seconds = int(ttl_min) * 60
-    query_key = f"v1_hist_{q.strip().lower()}_{ttl_seconds}"
-    if manual:
-        query_key = f"{query_key}_{st.session_state.get('hist_force', 0) + 1}"
-        st.session_state["hist_force"] = int(query_key.split("_")[-1])
+    # Only search when there is a query or tag
+    if not (q.strip() or tag_q.strip()):
+        st.info("Enter a search term or tag to view historical mention markets.")
+        return
 
     with st.spinner("Searching historical markets..."):
-        data = _fetch_history(q.strip().lower())
+        data = _fetch_history(q.strip().lower(), months)
     groups = _group_by_title(data)
 
     # Bulk tag fetch for first tickers of each group
@@ -164,11 +160,14 @@ def main() -> None:
         if selected_group_in_row:
             rows = []
             for m in selected_group_in_row["items"]:
+                # Map result to upper-case YES/NO when present
+                res = (m.get("result") or "").strip()
+                res_disp = res.upper() if res else ""
                 rows.append(
                     {
                         "Subtitle": _derive_description(m),
                         "Final volume": m.get("volume"),
-                        "Result": m.get("result"),
+                        "Result": res_disp,
                         "End": pd.to_datetime(
                             m.get("close_time") or m.get("end_date") or m.get("expiry_time") or m.get("latest_expiration_time"),
                             utc=True,
