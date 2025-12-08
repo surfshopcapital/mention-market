@@ -12,6 +12,7 @@ transcript_tag_association = Table(
     Base.metadata,
     Column("transcript_id", ForeignKey("transcripts.id", ondelete="CASCADE"), primary_key=True),
     Column("tag_id", ForeignKey("tags.id", ondelete="CASCADE"), primary_key=True),
+    extend_existing=True,
 )
 
 
