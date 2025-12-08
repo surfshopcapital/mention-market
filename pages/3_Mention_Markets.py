@@ -8,7 +8,7 @@ import streamlit.components.v1 as components
 
 from src.kalshi import KalshiClient
 from src.config import get_kalshi_api_base_url
-from src.db import get_session
+from src.db import get_session, init_db
 from src.storage import add_market_tags, get_market_tags
 
 
@@ -155,6 +155,12 @@ def _prepare_groups_cached(markets_json_key: str, markets_payload: list[dict]) -
 
 def main() -> None:
     st.set_page_config(page_title="Mention Markets", page_icon="💬", layout="wide")
+    # Ensure DB schema (including market_tags) exists
+    try:
+        init_db()
+    except Exception:
+        # If DB is unreachable, continue without tags
+        pass
     st.title("Mention Markets")
     st.caption("Live Kalshi mention markets and key stats.")
 
@@ -275,18 +281,25 @@ def main() -> None:
                         with btn_cols[1]:
                             # Tagging UI
                             existing_tags = []
-                            with get_session() as sess:
-                                # Use first ticker as key for group tags
-                                first_ticker = g["items"][0].get("ticker") if g["items"] else ""
-                                existing_tags = get_market_tags(sess, str(first_ticker))
+                            # Use first ticker as key for group tags
+                            first_ticker = g["items"][0].get("ticker") if g["items"] else ""
+                            if first_ticker:
+                                try:
+                                    with get_session() as sess:
+                                        existing_tags = get_market_tags(sess, str(first_ticker))
+                                except Exception:
+                                    existing_tags = []
                             tag_val = st.text_input("Tag", value="", key=f"tag_{i}")
-                            apply = st.button("Add tag", key=f"add_tag_{i}")
-                            if apply and tag_val.strip():
-                                with get_session() as sess:
-                                    updated = add_market_tags(sess, str(first_ticker), [tag_val.strip()])
-                                existing_tags = updated
-                                st.session_state[f"tags_{i}"] = updated
-                                st.success("Tag saved")
+                            apply = st.button("Add tag", key=f"add_tag_{i}", disabled=(not first_ticker))
+                            if apply and tag_val.strip() and first_ticker:
+                                try:
+                                    with get_session() as sess:
+                                        updated = add_market_tags(sess, str(first_ticker), [tag_val.strip()])
+                                    existing_tags = updated
+                                    st.session_state[f"tags_{i}"] = updated
+                                    st.success("Tag saved")
+                                except Exception as e:
+                                    st.warning("Failed to save tag.")
                             if st.session_state.get(f"tags_{i}"):
                                 existing_tags = st.session_state[f"tags_{i}"]
                             if existing_tags:
