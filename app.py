@@ -28,11 +28,13 @@ def main() -> None:
     )
 
     st.subheader("Quick links")
-    cols = st.columns(2)
+    cols = st.columns(3)
     with cols[0]:
         st.page_link("pages/1_Transcript_Analysis.py", label="1) Transcript Analysis", icon="🔍")
     with cols[1]:
         st.page_link("pages/2_Transcript_Library.py", label="2) Transcript Library", icon="📚")
+    with cols[2]:
+        st.page_link("pages/3_Mention_Markets.py", label="3) Mention Markets", icon="💬")
 
     st.divider()
     st.subheader("Global settings")

@@ -55,3 +55,46 @@ def get_default_words_per_minute() -> int:
     return max(60, min(val, 400))
 
 
+def get_kalshi_api_base_url() -> str:
+    """
+    Returns the Kalshi API base URL.
+    Prefer Streamlit secrets, then environment variable KALSHI_API_BASE_URL,
+    defaulting to https://api.kalshi.com for production.
+    """
+    secret_val = _get_streamlit_secret("KALSHI_API_BASE_URL")
+    if secret_val:
+        return secret_val.strip()
+    env_val = os.getenv("KALSHI_API_BASE_URL")
+    if env_val:
+        return env_val.strip()
+    return "https://api.kalshi.com"
+
+
+def get_kalshi_api_key_id() -> str:
+    """
+    Returns the Kalshi API Key ID.
+    Must be provided via Streamlit secrets (KALSHI_API_KEY_ID) or env var.
+    """
+    secret_val = _get_streamlit_secret("KALSHI_API_KEY_ID")
+    if secret_val:
+        return secret_val.strip()
+    env_val = os.getenv("KALSHI_API_KEY_ID")
+    if env_val:
+        return env_val.strip()
+    raise RuntimeError("KALSHI_API_KEY_ID is not set. Add to Streamlit secrets or environment.")
+
+
+def get_kalshi_private_key_pem() -> str:
+    """
+    Returns the Kalshi RSA private key PEM for signing.
+    Must be provided via Streamlit secrets (KALSHI_PRIVATE_KEY) or env var.
+    """
+    secret_val = _get_streamlit_secret("KALSHI_PRIVATE_KEY")
+    if secret_val:
+        return secret_val
+    env_val = os.getenv("KALSHI_PRIVATE_KEY")
+    if env_val:
+        return env_val
+    raise RuntimeError("KALSHI_PRIVATE_KEY is not set. Add to Streamlit secrets or environment.")
+
+
