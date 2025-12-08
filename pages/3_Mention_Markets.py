@@ -15,6 +15,8 @@ from src.storage import add_market_tags, get_market_tags, get_market_tags_bulk
 def _to_display_df(markets: list[dict]) -> pd.DataFrame:
     rows = []
     for m in markets:
+        if not isinstance(m, dict):
+            continue
         rows.append(
             {
                 "Title": m.get("title"),
@@ -81,6 +83,8 @@ def _derive_description(m: dict) -> str:
 def _group_by_title(markets: list[dict]) -> list[dict]:
     by_title: dict[str, list[dict]] = {}
     for m in markets:
+        if not isinstance(m, dict):
+            continue
         title = str(m.get("title", "")).strip()
         if not title:
             # If title missing, group by event_ticker as fallback
@@ -88,9 +92,9 @@ def _group_by_title(markets: list[dict]) -> list[dict]:
         by_title.setdefault(title, []).append(m)
     groups = []
     for title, items in by_title.items():
-        total_vol = sum(int(m.get("volume") or 0) for m in items)
+        total_vol = sum(int(m.get("volume") or 0) for m in items if isinstance(m, dict))
         # Use the latest close_time among strikes
-        end_times = [m.get("close_time") or m.get("end_date") or m.get("expiry_time") for m in items]
+        end_times = [m.get("close_time") or m.get("end_date") or m.get("expiry_time") for m in items if isinstance(m, dict)]
         # Choose max if available
         end_iso = None
         end_ts_epoch = None
