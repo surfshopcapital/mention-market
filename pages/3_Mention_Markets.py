@@ -8,6 +8,8 @@ import streamlit.components.v1 as components
 
 from src.kalshi import KalshiClient
 from src.config import get_kalshi_api_base_url
+from src.db import get_session
+from src.storage import add_market_tags, get_market_tags
 
 
 def _to_display_df(markets: list[dict]) -> pd.DataFrame:
@@ -232,67 +234,101 @@ def main() -> None:
                 cols = st.columns(len(row))
                 for col, g in zip(cols, row):
                     with col:
-                        card = st.container(border=True)
-                        with card:
-                            st.markdown(f"**{g['title']}**")
-                            c1, c2 = st.columns(2)
-                            with c1:
-                                st.caption(f"Strikes: {g['num_strikes']}")
-                            with c2:
-                                st.caption(f"Volume: {int(g['total_volume']):,}")
-                            st.caption(f"End: {g['end_date']}")
+                        # Color palette based on time-to-end
+                        import time as _t
+
+                        now = int(_t.time())
+                        end_ts = int(g.get("end_ts") or now)
+                        delta = max(end_ts - now, 0)
+                        day = 86400
+                        if delta < day:
+                            bg = "#e8f5e9"  # green-50
+                            border = "#43a047"  # green-600
+                        elif delta < 7 * day:
+                            bg = "#e3f2fd"  # blue-50
+                            border = "#1e88e5"  # blue-600
+                        else:
+                            bg = "#ffebee"  # red-50
+                            border = "#e53935"  # red-600
+
+                        # Styled card
+                        st.markdown(
+                            f"""
+                            <div style="background:{bg};border:1px solid {border};border-radius:10px;padding:12px;margin-bottom:6px;">
+                              <div style="font-weight:600;margin-bottom:6px;">{g['title']}</div>
+                              <div style="display:flex;gap:16px;font-size:12px;color:#555;">
+                                <div>Strikes: <b>{g['num_strikes']}</b></div>
+                                <div>Volume: <b>{int(g['total_volume']):,}</b></div>
+                                <div>End: <b>{g['end_date']}</b></div>
+                              </div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+
+                        btn_cols = st.columns([1, 1])
+                        with btn_cols[0]:
                             if st.button("View strikes", key=f"view_{i}_{g['title']}"):
                                 st.session_state["mm_selected_title"] = g["title"]
                                 st.session_state["mm_scrolled"] = False
                                 st.rerun()
+                        with btn_cols[1]:
+                            # Tagging UI
+                            existing_tags = []
+                            with get_session() as sess:
+                                # Use first ticker as key for group tags
+                                first_ticker = g["items"][0].get("ticker") if g["items"] else ""
+                                existing_tags = get_market_tags(sess, str(first_ticker))
+                            tag_val = st.text_input("Tag", value="", key=f"tag_{i}")
+                            apply = st.button("Add tag", key=f"add_tag_{i}")
+                            if apply and tag_val.strip():
+                                with get_session() as sess:
+                                    updated = add_market_tags(sess, str(first_ticker), [tag_val.strip()])
+                                existing_tags = updated
+                                st.session_state[f"tags_{i}"] = updated
+                                st.success("Tag saved")
+                            if st.session_state.get(f"tags_{i}"):
+                                existing_tags = st.session_state[f"tags_{i}"]
+                            if existing_tags:
+                                st.caption("Tags: " + ", ".join(sorted(existing_tags)))
 
-            # Details table below cards
-            selected_title = st.session_state.get("mm_selected_title")
-            if selected_title:
-                st.divider()
-                # Anchor for smooth scroll on selection
-                st.markdown("<a id='strikes_anchor'></a>", unsafe_allow_html=True)
-                if not st.session_state.get("mm_scrolled", False):
-                    components.html(
-                        """
-                        <script>
-                        const el = document.getElementById('strikes_anchor');
-                        if (el) { el.scrollIntoView({behavior: 'smooth', block: 'start'}); }
-                        </script>
-                        """,
-                        height=0,
-                    )
-                    st.session_state["mm_scrolled"] = True
+                            # Inline strikes table below selected card
+                            is_selected = st.session_state.get("mm_selected_title") == g["title"]
+                            if is_selected:
+                                rows = []
+                                for m in g["items"]:
+                                    rows.append(
+                                        {
+                                            "Ticker": m.get("ticker"),
+                                            "Description": _derive_description(m),
+                                            "Yes Bid (¢)": m.get("yes_bid"),
+                                            "Yes Ask (¢)": m.get("yes_ask"),
+                                            "No Bid (¢)": m.get("no_bid"),
+                                            "No Ask (¢)": m.get("no_ask"),
+                                            "Volume": m.get("volume"),
+                                            "Open Interest": m.get("open_interest"),
+                                            "End Date": m.get("close_time") or m.get("end_date") or m.get("expiry_time"),
+                                        }
+                                    )
+                                df = pd.DataFrame(rows)
+                                if "End Date" in df.columns:
+                                    df["End Date"] = df["End Date"].apply(_safe_parse_dt)
+                                if "Yes Bid (¢)" in df.columns:
+                                    df = df.sort_values(by="Yes Bid (¢)", ascending=False, na_position="last")
+                                st.dataframe(df, use_container_width=True, hide_index=True)
 
-                st.subheader(f"Strikes – {selected_title}")
-                group_map = st.session_state.get("mm_group_map") or {g["title"]: g for g in groups}
-                st.session_state["mm_group_map"] = group_map
-                g = group_map.get(selected_title)
-                if g:
-                    rows = []
-                    for m in g["items"]:
-                        rows.append(
-                            {
-                                "Ticker": m.get("ticker"),
-                                "Description": _derive_description(m),
-                                "Yes Bid (¢)": m.get("yes_bid"),
-                                "Yes Ask (¢)": m.get("yes_ask"),
-                                "No Bid (¢)": m.get("no_bid"),
-                                "No Ask (¢)": m.get("no_ask"),
-                                "Volume": m.get("volume"),
-                                "Open Interest": m.get("open_interest"),
-                                "End Date": m.get("close_time") or m.get("end_date") or m.get("expiry_time"),
-                            }
-                        )
-                    df = pd.DataFrame(rows)
-                    if "End Date" in df.columns:
-                        df["End Date"] = df["End Date"].apply(_safe_parse_dt)
-                    # Sort by Yes Bid descending
-                    if "Yes Bid (¢)" in df.columns:
-                        df = df.sort_values(by="Yes Bid (¢)", ascending=False, na_position="last")
-                    st.dataframe(df, use_container_width=True, hide_index=True)
-                else:
-                    st.info("No strikes available for the selected card.")
+                                # Strikes one-row comma-separated list
+                                strikes: list[str] = []
+                                for term in df.get("Description", []).tolist() if "Description" in df.columns else []:
+                                    t = str(term or "").strip()
+                                    if t and t not in strikes:
+                                        strikes.append(t)
+                                if strikes:
+                                    st.caption("Strikes list")
+                                    st.markdown(", ".join(strikes))
+                                else:
+                                    st.caption("Strikes list")
+                                    st.markdown("—")
 
         # Raw data section removed per request
 

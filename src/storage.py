@@ -5,7 +5,7 @@ from typing import Iterable, List, Optional, Sequence
 from sqlalchemy import asc, desc, select
 from sqlalchemy.orm import Session
 
-from .models import Tag, Transcript, transcript_tag_association
+from .models import MarketTag, Tag, Transcript, transcript_tag_association
 
 
 def create_transcript(
@@ -103,4 +103,22 @@ def list_transcripts(
 def get_transcript(session: Session, transcript_id: int) -> Optional[Transcript]:
     return session.get(Transcript, transcript_id)
 
+
+# Market tagging helpers
+def get_market_tags(session: Session, market_ticker: str) -> List[str]:
+    rows = session.scalars(select(MarketTag).where(MarketTag.market_ticker == market_ticker)).all()
+    return [r.tag for r in rows]
+
+
+def add_market_tags(session: Session, market_ticker: str, tag_names: Sequence[str]) -> List[str]:
+    clean = sorted({(t or "").strip() for t in tag_names if t and (t or "").strip()})
+    if not clean:
+        return get_market_tags(session, market_ticker)
+    existing = session.scalars(select(MarketTag).where(MarketTag.market_ticker == market_ticker)).all()
+    existing_set = {r.tag for r in existing}
+    to_add = [t for t in clean if t not in existing_set]
+    for tag in to_add:
+        session.add(MarketTag(market_ticker=market_ticker, tag=tag))
+    session.flush()
+    return get_market_tags(session, market_ticker)
 

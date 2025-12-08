@@ -52,3 +52,13 @@ class Tag(Base):
     )
 
 
+class MarketTag(Base):
+    __tablename__ = "market_tags"
+    __table_args__ = (UniqueConstraint("market_ticker", "tag", name="uq_market_ticker_tag"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    market_ticker: Mapped[str] = mapped_column(String(128), index=True, nullable=False)
+    tag: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
