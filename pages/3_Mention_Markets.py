@@ -9,7 +9,7 @@ import streamlit.components.v1 as components
 from src.kalshi import KalshiClient
 from src.config import get_kalshi_api_base_url
 from src.db import get_session, init_db
-from src.storage import add_market_tags, get_market_tags
+from src.storage import add_market_tags, get_market_tags, get_market_tags_bulk
 
 
 def _to_display_df(markets: list[dict]) -> pd.DataFrame:
@@ -49,7 +49,7 @@ def _to_display_df(markets: list[dict]) -> pd.DataFrame:
     return df[existing_cols]
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=300)
 def _fetch_mention_markets_cached(cache_key: str) -> list[dict]:
     client = KalshiClient()
     return client.list_mention_markets()
@@ -166,7 +166,7 @@ def main() -> None:
 
     with st.sidebar:
         st.subheader("Refresh")
-        refresh_sec = st.slider("Auto-refresh interval (seconds)", min_value=0, max_value=300, value=60, step=15)
+        refresh_sec = st.slider("Auto-refresh interval (seconds)", min_value=0, max_value=600, value=300, step=30)
         _ = st.caption("Set to 0 to disable auto-refresh.")
         manual = st.button("Refresh now", type="primary", use_container_width=True)
 
@@ -222,6 +222,25 @@ def main() -> None:
                 st.session_state["mm_groups_key"] = markets_key
                 st.session_state["mm_groups"] = groups
                 st.session_state["mm_group_map"] = {g["title"]: g for g in groups}
+
+            # Preload tags for all first tickers (single DB roundtrip, cached in session for 5 minutes)
+            tickers_for_tags: list[str] = [g["items"][0].get("ticker") for g in groups if g.get("items")]
+            need_reload_tags = False
+            now_ms = int(pd.Timestamp.utcnow().timestamp() * 1000)
+            if st.session_state.get("mm_tags_loaded_at_ms") is None:
+                need_reload_tags = True
+            else:
+                # reload if older than 5 minutes or manual refresh
+                need_reload_tags = (now_ms - int(st.session_state["mm_tags_loaded_at_ms"])) > 5 * 60 * 1000 or manual
+            if need_reload_tags:
+                try:
+                    with get_session() as sess:
+                        tags_map = get_market_tags_bulk(sess, tickers_for_tags)
+                    st.session_state["mm_tags_map"] = tags_map
+                    st.session_state["mm_tags_loaded_at_ms"] = now_ms
+                except Exception:
+                    st.session_state["mm_tags_map"] = {}
+                    st.session_state["mm_tags_loaded_at_ms"] = now_ms
 
             # Top summary bar
             total_markets = len(groups)
@@ -295,13 +314,7 @@ def main() -> None:
                             )
 
                         # Tag persistence (after controls for layout)
-                        existing_tags = []
-                        if first_ticker:
-                            try:
-                                with get_session() as sess:
-                                    existing_tags = get_market_tags(sess, str(first_ticker))
-                            except Exception:
-                                existing_tags = []
+                        existing_tags = list((st.session_state.get("mm_tags_map") or {}).get(str(first_ticker), []))
                         if apply and tag_val.strip() and first_ticker:
                             try:
                                 with get_session() as sess:
@@ -312,6 +325,14 @@ def main() -> None:
                                 st.success("Tag saved")
                             except Exception:
                                 st.warning("Failed to save tag.")
+                            # Update in-memory tags map immediately so UI does not wait for refetch
+                            current_map = st.session_state.get("mm_tags_map") or {}
+                            cur_list = list(current_map.get(str(first_ticker), []))
+                            if tag_val.strip() not in cur_list:
+                                cur_list.append(tag_val.strip())
+                            current_map[str(first_ticker)] = sorted(cur_list)
+                            st.session_state["mm_tags_map"] = current_map
+                            st.session_state["mm_tags_loaded_at_ms"] = now_ms
                         if st.session_state.get(f"tags_{group_key}"):
                             existing_tags = st.session_state[f"tags_{group_key}"]
                         if existing_tags:

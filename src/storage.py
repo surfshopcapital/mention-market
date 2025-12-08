@@ -122,3 +122,20 @@ def add_market_tags(session: Session, market_ticker: str, tag_names: Sequence[st
     session.flush()
     return get_market_tags(session, market_ticker)
 
+
+def get_market_tags_bulk(session: Session, tickers: Sequence[str]) -> dict[str, List[str]]:
+    """
+    Fetch tags for many market tickers in a single query.
+    """
+    tickers_clean = sorted({str(t) for t in tickers if t})
+    if not tickers_clean:
+        return {}
+    rows = session.scalars(select(MarketTag).where(MarketTag.market_ticker.in_(tickers_clean))).all()
+    mapping: dict[str, List[str]] = {t: [] for t in tickers_clean}
+    for r in rows:
+        mapping.setdefault(r.market_ticker, []).append(r.tag)
+    # Sort tag lists for stability
+    for k in list(mapping.keys()):
+        mapping[k] = sorted(list({*mapping.get(k, [])}))
+    return mapping
+
