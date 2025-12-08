@@ -274,34 +274,35 @@ def main() -> None:
 
                         btn_cols = st.columns([1, 1])
                         with btn_cols[0]:
-                            if st.button("View strikes", key=f"view_{i}_{g['title']}"):
+                            # Stable group key based on first ticker (fallback to index + title)
+                            first_ticker = g["items"][0].get("ticker") if g["items"] else ""
+                            group_key = (first_ticker or f"{i}_{abs(hash(g['title']))}").replace(" ", "_")
+                            if st.button("View strikes", key=f"view_{group_key}"):
                                 st.session_state["mm_selected_title"] = g["title"]
                                 st.session_state["mm_scrolled"] = False
                                 st.rerun()
                         with btn_cols[1]:
                             # Tagging UI
                             existing_tags = []
-                            # Use first ticker as key for group tags
-                            first_ticker = g["items"][0].get("ticker") if g["items"] else ""
                             if first_ticker:
                                 try:
                                     with get_session() as sess:
                                         existing_tags = get_market_tags(sess, str(first_ticker))
                                 except Exception:
                                     existing_tags = []
-                            tag_val = st.text_input("Tag", value="", key=f"tag_{i}")
-                            apply = st.button("Add tag", key=f"add_tag_{i}", disabled=(not first_ticker))
+                            tag_val = st.text_input("Tag", value="", key=f"tag_{group_key}")
+                            apply = st.button("Add tag", key=f"add_tag_{group_key}", disabled=(not first_ticker))
                             if apply and tag_val.strip() and first_ticker:
                                 try:
                                     with get_session() as sess:
                                         updated = add_market_tags(sess, str(first_ticker), [tag_val.strip()])
                                     existing_tags = updated
-                                    st.session_state[f"tags_{i}"] = updated
+                                    st.session_state[f"tags_{group_key}"] = updated
                                     st.success("Tag saved")
                                 except Exception as e:
                                     st.warning("Failed to save tag.")
-                            if st.session_state.get(f"tags_{i}"):
-                                existing_tags = st.session_state[f"tags_{i}"]
+                            if st.session_state.get(f"tags_{group_key}"):
+                                existing_tags = st.session_state[f"tags_{group_key}"]
                             if existing_tags:
                                 st.caption("Tags: " + ", ".join(sorted(existing_tags)))
 
