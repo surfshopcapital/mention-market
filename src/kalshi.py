@@ -17,7 +17,7 @@ from .config import (
 )
 
 
-class KalshiClient:
+class KalshiClient(KalshiHistoryMixin):
     """
     Minimal Kalshi HTTP client with RSA-PSS request signing.
     """
@@ -132,6 +132,36 @@ class KalshiClient:
         if status != 200:
             raise RuntimeError(f"Kalshi markets request failed: {status} {data}")
         return data
+
+    def list_markets_paginated(
+        self,
+        *,
+        series_ticker: Optional[str] = None,
+        status_filter: Optional[str] = None,
+        per_page: int = 500,
+        max_pages: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch multiple pages of markets to cover historical queries.
+        """
+        all_items: List[Dict[str, Any]] = []
+        cursor: Optional[str] = None
+        for _ in range(max_pages):
+            data = self.list_markets(series_ticker=series_ticker, status_filter=status_filter, limit=per_page, cursor=cursor)
+            items = data.get("markets", []) or data.get("data", []) or []
+            if not items:
+                break
+            all_items.extend(items)
+            cursor = data.get("cursor")
+            if not cursor:
+                break
+        # Deduplicate by ticker
+        by_ticker: Dict[str, Dict[str, Any]] = {}
+        for m in all_items:
+            t = m.get("ticker")
+            if t and t not in by_ticker:
+                by_ticker[t] = m
+        return list(by_ticker.values())
 
     def list_markets_debug(
         self,
@@ -250,6 +280,48 @@ def _filter_mention_like(markets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         ):
             results.append(m)
     return results
+
+
+def _contains_term(m: Dict[str, Any], term: str) -> bool:
+    if not term:
+        return True
+    needle = term.lower().strip()
+    if not needle:
+        return True
+    fields = [
+        str(m.get("title", "")),
+        str(m.get("subtitle", "")),
+        str(m.get("yes_sub_title", "")),
+        str(m.get("no_sub_title", "")),
+        str(m.get("ticker", "")),
+        str(m.get("event_ticker", "")),
+        str(m.get("series_ticker", "")),
+    ]
+    hay = " ".join(fields).lower()
+    return needle in hay
+
+
+class KalshiHistoryMixin:
+    def list_mention_markets_historical(self, *, text_term: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        List historical (closed/settled) mention-like markets, optionally filtered by text term.
+        """
+        # Fetch closed and settled pages
+        closed = self.list_markets_paginated(status_filter="closed", per_page=500, max_pages=5)
+        settled = self.list_markets_paginated(status_filter="settled", per_page=500, max_pages=5)
+        all_hist = closed + settled
+        # Filter mention-like
+        mention_like = _filter_mention_like(all_hist)
+        # Optional text filter
+        if text_term:
+            mention_like = [m for m in mention_like if _contains_term(m, text_term)]
+        # Deduplicate by ticker
+        by_ticker: Dict[str, Dict[str, Any]] = {}
+        for m in mention_like:
+            t = m.get("ticker")
+            if t and t not in by_ticker:
+                by_ticker[t] = m
+        return list(by_ticker.values())
 
 
 

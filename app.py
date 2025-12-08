@@ -35,6 +35,7 @@ def main() -> None:
         st.page_link("pages/2_Transcript_Library.py", label="2) Transcript Library", icon="📚")
     with cols[2]:
         st.page_link("pages/3_Mention_Markets.py", label="3) Mention Markets", icon="💬")
+    st.page_link("pages/4_Historical_Mention_Search.py", label="4) Historical Mention Search", icon="🕰️")
 
     st.divider()
     st.subheader("Global settings")
