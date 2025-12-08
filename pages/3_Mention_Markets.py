@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from src.kalshi import KalshiClient
 from src.config import get_kalshi_api_base_url
@@ -88,11 +91,16 @@ def _group_by_title(markets: list[dict]) -> list[dict]:
         end_times = [m.get("close_time") or m.get("end_date") or m.get("expiry_time") for m in items]
         # Choose max if available
         end_iso = None
+        end_ts_epoch = None
         try:
             parsed = pd.to_datetime([e for e in end_times if e], utc=True, errors="coerce")
             parsed = [p for p in parsed if not pd.isna(p)]
             if parsed:
-                end_iso = max(parsed).isoformat()
+                # Latest end used for display; we will also store earliest for sorting
+                end_latest = max(parsed)
+                end_soonest = min(parsed)
+                end_iso = end_latest.isoformat()
+                end_ts_epoch = int(end_soonest.timestamp())
         except Exception:
             end_iso = None
         groups.append(
@@ -101,12 +109,46 @@ def _group_by_title(markets: list[dict]) -> list[dict]:
                 "num_strikes": len(items),
                 "total_volume": total_vol,
                 "end_date": _safe_parse_dt(end_iso or (end_times[0] if end_times else "")),
+                "end_ts": end_ts_epoch if end_ts_epoch is not None else 2**31 - 1,
                 "items": items,
             }
         )
-    # Sort by total volume desc
-    groups.sort(key=lambda g: int(g.get("total_volume") or 0), reverse=True)
+    # Sort by soonest end date first
+    groups.sort(key=lambda g: int(g.get("end_ts") or (2**31 - 1)))
     return groups
+
+
+@st.cache_data(show_spinner=False)
+def _prepare_groups_cached(markets_json_key: str, markets_payload: list[dict]) -> list[dict]:
+    """
+    Returns grouped markets with:
+      - unique strikes per group (dedup by ticker)
+      - groups with > 1 strike only
+      - totals recomputed
+      - sorted by soonest end date
+    Cached by the markets_json_key to avoid recomputation on selection reruns.
+    """
+    groups = _group_by_title(markets_payload)
+    filtered_groups = []
+    for g in groups:
+        by_ticker = {}
+        for m in g["items"]:
+            t = m.get("ticker")
+            if t and t not in by_ticker:
+                by_ticker[t] = m
+        unique_items = list(by_ticker.values())
+        if len(unique_items) <= 1:
+            continue
+        g_clean = {
+            **g,
+            "items": unique_items,
+            "num_strikes": len(unique_items),
+            "total_volume": sum(int(m.get("volume") or 0) for m in unique_items),
+        }
+        filtered_groups.append(g_clean)
+    # Resort by soonest end date in case values changed
+    filtered_groups.sort(key=lambda g: int(g.get("end_ts") or (2**31 - 1)))
+    return filtered_groups
 
 
 def main() -> None:
@@ -159,26 +201,9 @@ def main() -> None:
                 st.error(f"Active markets sample error: {e}")
 
         if markets:
-            groups = _group_by_title(markets)
-            # Deduplicate tickers within each group and drop groups with <= 1 strike
-            filtered_groups = []
-            for g in groups:
-                by_ticker = {}
-                for m in g["items"]:
-                    t = m.get("ticker")
-                    if t and t not in by_ticker:
-                        by_ticker[t] = m
-                unique_items = list(by_ticker.values())
-                if len(unique_items) <= 1:
-                    continue
-                g_clean = {
-                    **g,
-                    "items": unique_items,
-                    "num_strikes": len(unique_items),
-                    "total_volume": sum(int(m.get("volume") or 0) for m in unique_items),
-                }
-                filtered_groups.append(g_clean)
-            groups = filtered_groups
+            # Cache the grouped structure by a stable JSON key for speed on reruns
+            markets_key = hashlib.md5(json.dumps(markets, sort_keys=True).encode("utf-8")).hexdigest()
+            groups = _prepare_groups_cached(markets_key, markets)
 
             # Top summary bar
             total_markets = len(groups)
@@ -208,12 +233,27 @@ def main() -> None:
                             st.caption(f"End: {g['end_date']}")
                             if st.button("View strikes", key=f"view_{i}_{g['title']}"):
                                 st.session_state["mm_selected_title"] = g["title"]
+                                st.session_state["mm_scrolled"] = False
                                 st.rerun()
 
             # Details table below cards
             selected_title = st.session_state.get("mm_selected_title")
             if selected_title:
                 st.divider()
+                # Anchor for smooth scroll on selection
+                st.markdown("<a id='strikes_anchor'></a>", unsafe_allow_html=True)
+                if not st.session_state.get("mm_scrolled", False):
+                    components.html(
+                        """
+                        <script>
+                        const el = document.getElementById('strikes_anchor');
+                        if (el) { el.scrollIntoView({behavior: 'smooth', block: 'start'}); }
+                        </script>
+                        """,
+                        height=0,
+                    )
+                    st.session_state["mm_scrolled"] = True
+
                 st.subheader(f"Strikes – {selected_title}")
                 group_map = {g["title"]: g for g in groups}
                 g = group_map.get(selected_title)
@@ -236,12 +276,14 @@ def main() -> None:
                     df = pd.DataFrame(rows)
                     if "End Date" in df.columns:
                         df["End Date"] = df["End Date"].apply(_safe_parse_dt)
+                    # Sort by Yes Bid descending
+                    if "Yes Bid (¢)" in df.columns:
+                        df = df.sort_values(by="Yes Bid (¢)", ascending=False, na_position="last")
                     st.dataframe(df, use_container_width=True, hide_index=True)
                 else:
                     st.info("No strikes available for the selected card.")
 
-        with st.expander("Raw data", expanded=False):
-            st.json(markets or [])
+        # Raw data section removed per request
 
 
 if __name__ == "__main__":
