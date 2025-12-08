@@ -26,10 +26,10 @@ class KalshiHistoryMixin:
         import pandas as _pd
 
         earliest_ts = int((_pd.Timestamp.utcnow() - _pd.Timedelta(days=30 * max(months, 1))).timestamp())
-        closed = self.list_markets_paginated(status_filter="closed", per_page=500, max_pages=20, earliest_close_ts=earliest_ts)
-        settled = self.list_markets_paginated(status_filter="settled", per_page=500, max_pages=20, earliest_close_ts=earliest_ts)
-        determined = self.list_markets_paginated(status_filter="determined", per_page=500, max_pages=20, earliest_close_ts=earliest_ts)
-        all_hist = closed + settled + determined
+        # Fetch without status filter to avoid API differences; filter locally for historical statuses
+        all_hist = self.list_markets_paginated(status_filter=None, per_page=500, max_pages=20, earliest_close_ts=earliest_ts)
+        wanted_status = {"closed", "settled", "determined"}
+        all_hist = [m for m in all_hist if str(m.get("status", "")).lower() in wanted_status]
         mention_like = _filter_mention_like(all_hist)
         if text_term:
             mention_like = [m for m in mention_like if _contains_term(m, text_term)]
@@ -148,7 +148,7 @@ class KalshiClient(KalshiHistoryMixin):
         if series_ticker:
             params["series_ticker"] = series_ticker
         if status_filter:
-            # Supported values: 'unopened', 'open', 'closed', 'settled'
+            # Valid values per docs: 'initialized', 'active', 'closed', 'settled', 'determined'
             params["status"] = status_filter
         if cursor:
             params["cursor"] = cursor
@@ -260,7 +260,7 @@ class KalshiClient(KalshiHistoryMixin):
         if series_tickers:
             for stkr in series_tickers:
                 try:
-                    data = self.list_markets(series_ticker=stkr, status_filter="open", limit=200)
+                    data = self.list_markets(series_ticker=stkr, status_filter="active", limit=200)
                     markets = data.get("markets", []) or data.get("data", []) or []
                     mention_markets.extend(markets)
                 except Exception:
@@ -281,7 +281,7 @@ class KalshiClient(KalshiHistoryMixin):
 
         # Fallback: fetch a broad markets page and filter by title text
         try:
-            data = self.list_markets(status_filter="open", limit=500)
+            data = self.list_markets(status_filter="active", limit=500)
             all_markets = data.get("markets", []) or data.get("data", []) or []
             # Prefer category filter first; otherwise apply heuristics
             filtered_cat = [m for m in all_markets if str(m.get("category", "")).lower() == "mentions"]

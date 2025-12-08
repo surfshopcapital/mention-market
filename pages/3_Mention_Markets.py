@@ -197,7 +197,7 @@ def main() -> None:
             st.info("No mention markets found. Showing a sample of active markets to verify connectivity.")
             try:
                 client = KalshiClient()
-                any_resp = client.request_debug("GET", "/trade-api/v2/markets", params={"limit": 50, "status": "open"})
+                any_resp = client.request_debug("GET", "/trade-api/v2/markets", params={"limit": 50, "status": "active"})
                 mk_items = any_resp.get("data", {}).get("markets") or any_resp.get("markets") or any_resp.get("data") or []
                 if isinstance(mk_items, dict) and "markets" in mk_items:
                     mk_items = mk_items["markets"]
@@ -366,7 +366,6 @@ def main() -> None:
                     if "Yes Bid (¢)" in df.columns:
                         df = df.sort_values(by="Yes Bid (¢)", ascending=False, na_position="last")
                     st.dataframe(df, width="stretch", hide_index=True)
-                    st.dataframe(df, width="stretch", hide_index=True)
                     strikes: list[str] = []
                     for term in df.get("Description", []).tolist() if "Description" in df.columns else []:
                         t = str(term or "").strip()
@@ -375,7 +374,7 @@ def main() -> None:
                     st.caption("Strikes list")
                     st.markdown(", ".join(strikes) if strikes else "—")
 
-        # Raw data section removed per request
+    # Raw data section removed per request
 
 
 if __name__ == "__main__":
