@@ -18,16 +18,26 @@ from .config import (
 
 
 class KalshiHistoryMixin:
-    def list_mention_markets_historical(self, *, text_term: Optional[str] = None, months: int = 12) -> List[Dict[str, Any]]:
+    def list_mention_markets_historical(
+        self,
+        *,
+        text_term: Optional[str] = None,
+        months: int = 12,
+        include_closed: bool = False,
+    ) -> List[Dict[str, Any]]:
         """
-        List historical (closed/settled/determined) mention-like markets for the last N months,
+        List historical mention-like markets for the last N months.
+        By default returns final-result markets (settled/determined). If include_closed=True,
+        also includes markets with status=closed (no final result yet).
         optionally filtered by text term.
         """
         import pandas as _pd
 
         earliest_ts = int((_pd.Timestamp.utcnow() - _pd.Timedelta(days=30 * max(months, 1))).timestamp())
-        # Explicitly fetch each historical status to ensure the API returns past markets
-        statuses = ["closed", "settled", "determined"]
+        # Fetch final-result statuses; optionally include 'closed'
+        statuses = ["settled", "determined"]
+        if include_closed:
+            statuses = ["closed", "settled", "determined"]
         combined: List[Dict[str, Any]] = []
         for s in statuses:
             try:
@@ -57,6 +67,29 @@ class KalshiHistoryMixin:
             if t and t not in by_ticker:
                 by_ticker[t] = m
         return list(by_ticker.values())
+
+    def list_mention_markets_closed_recent(self, *, limit: int = 12) -> List[Dict[str, Any]]:
+        """
+        Returns the most recent 'closed' mention-like markets (not necessarily final results).
+        """
+        items = self.list_markets_paginated(status_filter="closed", per_page=500, max_pages=5, earliest_close_ts=None)
+        mention_like = _filter_mention_like(items)
+        # Sort by close time desc
+        import pandas as _pd
+        def to_ts(m: Dict[str, Any]) -> int:
+            t = m.get("close_time") or m.get("end_date") or m.get("expiry_time") or m.get("latest_expiration_time")
+            ts = _pd.to_datetime(t, utc=True, errors="coerce")
+            if ts is None or _pd.isna(ts):
+                return 0
+            return int(ts.timestamp())
+        mention_like.sort(key=to_ts, reverse=True)
+        # Dedup by ticker and take first N
+        by_ticker: Dict[str, Dict[str, Any]] = {}
+        for m in mention_like:
+            t = m.get("ticker")
+            if t and t not in by_ticker:
+                by_ticker[t] = m
+        return list(by_ticker.values())[: max(0, int(limit))]
 
 
 class KalshiClient(KalshiHistoryMixin):

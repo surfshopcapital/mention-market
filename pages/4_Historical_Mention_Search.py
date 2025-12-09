@@ -65,9 +65,14 @@ def _group_by_event(markets: List[dict]) -> List[dict]:
 
 
 @st.cache_data(show_spinner=False, ttl=300)
-def _fetch_history(term: str, months: int) -> List[dict]:
+def _fetch_history(term: str, months: int, include_closed: bool) -> List[dict]:
     client = KalshiClient()
-    return client.list_mention_markets_historical(text_term=term, months=months)
+    return client.list_mention_markets_historical(text_term=term, months=months, include_closed=include_closed)
+
+@st.cache_data(show_spinner=False, ttl=180)
+def _fetch_recent_closed(limit: int = 12) -> List[dict]:
+    client = KalshiClient()
+    return client.list_mention_markets_closed_recent(limit=limit)
 
 
 def main() -> None:
@@ -91,15 +96,60 @@ def main() -> None:
     with top_controls[1]:
         months = st.selectbox("Lookback (months)", options=[3, 6, 12], index=2)
     debug_mode = st.checkbox("Show debug", value=False)
+    include_closed = st.checkbox("Include closed (no final result yet)", value=False)
 
-    # Only search when there is a query or tag
+    # Default: If no query or tag, show recent closed mention markets (cards; 6 per row)
     if not (q.strip() or tag_q.strip()):
-        st.info("Enter a search term or tag to view historical mention markets.")
+        st.subheader("Recent closed mention markets")
+        try:
+            recent = _fetch_recent_closed(limit=12)
+        except Exception as e:
+            st.error(f"Failed to fetch recent closed: {e}")
+            return
+        if debug_mode:
+            with st.expander("Debug: Recent-closed mention markets"):
+                st.write({"count": len(recent)})
+                if recent:
+                    sample_cols = ["ticker", "event_ticker", "series_ticker", "title", "status", "close_time", "result"]
+                    st.dataframe(pd.DataFrame([{k: m.get(k) for k in sample_cols} for m in recent[:12]]), hide_index=True, use_container_width=True)
+        if not recent:
+            st.info("No recent closed mention markets found.")
+            return
+        # Cards 6 per row
+        cols_per_row = 6
+        for i in range(0, len(recent), cols_per_row):
+            row = recent[i : i + cols_per_row]
+            cols = st.columns(len(row))
+            for c, m in zip(cols, row):
+                with c:
+                    end_ts = _safe_parse_dt(m.get("close_time") or m.get("end_date") or m.get("expiry_time") or m.get("latest_expiration_time"))
+                    end_disp = end_ts.strftime("%b %d, %Y %H:%M UTC") if end_ts is not None else "—"
+                    said = ""
+                    res = (m.get("result") or "").strip()
+                    res_disp = res.upper() if res else ""
+                    if res_disp == "YES":
+                        said = "Said"
+                    elif res_disp == "NO":
+                        said = "Not said"
+                    st.markdown(
+                        f"""
+                        <div style="background:#fff;border:1px solid #e0e0e0;border-radius:10px;padding:10px;margin-bottom:6px;">
+                          <div style="font-weight:600;margin-bottom:6px;line-height:1.2">{str(m.get("title") or m.get("ticker") or "")}</div>
+                          <div style="font-size:12px;color:#555;line-height:1.4">
+                            <div>Word: <b>{_derive_description(m)}</b></div>
+                            <div>Status: <b>{str(m.get("status") or "").lower()}</b></div>
+                            <div>Result: <b>{res_disp or "—"}</b> {("("+said+")") if said else ""}</div>
+                            <div>End: <b>{end_disp}</b></div>
+                          </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
         return
 
     with st.spinner("Searching historical markets..."):
         try:
-            data = _fetch_history(q.strip().lower(), int(months))
+            data = _fetch_history(q.strip().lower(), int(months), include_closed)
         except Exception as e:
             st.error(f"Failed to fetch history: {e}")
             return
@@ -215,11 +265,17 @@ def main() -> None:
                 # Map result to upper-case YES/NO when present
                 res = (m.get("result") or "").strip()
                 res_disp = res.upper() if res else ""
+                said = ""
+                if res_disp == "YES":
+                    said = "Said"
+                elif res_disp == "NO":
+                    said = "Not said"
                 rows.append(
                     {
-                        "Subtitle": _derive_description(m),
+                        "Word": _derive_description(m),
                         "Final volume": m.get("volume"),
                         "Result": res_disp,
+                        "Said?": said,
                         "End": pd.to_datetime(
                             m.get("close_time") or m.get("end_date") or m.get("expiry_time") or m.get("latest_expiration_time"),
                             utc=True,
@@ -231,7 +287,8 @@ def main() -> None:
             df = pd.DataFrame(rows)
             if "End" in df.columns:
                 df["End"] = df["End"].dt.strftime("%b %d, %Y %H:%M UTC")
-            st.dataframe(df[["Subtitle", "Final volume", "Result", "End", "Ticker"]], width="stretch", hide_index=True)
+            cols = [c for c in ["Word", "Final volume", "Result", "Said?", "End", "Ticker"] if c in df.columns]
+            st.dataframe(df[cols], width="stretch", hide_index=True)
 
 
 if __name__ == "__main__":
