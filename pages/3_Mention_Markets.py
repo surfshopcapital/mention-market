@@ -53,9 +53,9 @@ def _to_display_df(markets: list[dict]) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False, ttl=300)
-def _fetch_mention_markets_cached(cache_key: str) -> list[dict]:
+def _fetch_mention_events_cached(cache_key: str) -> list[dict]:
     client = KalshiClient()
-    return client.list_mention_markets()
+    return client.list_mention_events_active()
 
 
 def _safe_parse_dt(value: object) -> str:
@@ -81,23 +81,23 @@ def _derive_description(m: dict) -> str:
     return ""
 
 
-def _group_by_title(markets: list[dict]) -> list[dict]:
-    # Group by event (active events view)
-    by_event: dict[str, list[dict]] = {}
-    for m in markets:
-        if not isinstance(m, dict):
-            continue
-        evt = str(m.get("event_ticker") or "").strip()
-        if not evt:
-            # Fallback to grouping by market title if event_ticker is missing
-            evt = str(m.get("title") or m.get("ticker") or "Unknown").strip()
-        by_event.setdefault(evt, []).append(m)
+def _events_to_groups(events: list[dict]) -> list[dict]:
+    # Events already grouped; compute display aggregations from nested active markets
     groups = []
-    for event_ticker, items in by_event.items():
-        total_vol = sum(int(m.get("volume") or 0) for m in items if isinstance(m, dict))
-        # Use the latest close_time among strikes
-        end_times = [m.get("close_time") or m.get("end_date") or m.get("expiry_time") for m in items if isinstance(m, dict)]
-        # Choose max if available
+    for e in events:
+        if not isinstance(e, dict):
+            continue
+        items = [m for m in (e.get("markets") or []) if isinstance(m, dict)]
+        if not items:
+            continue
+        total_vol = sum(int(m.get("volume") or 0) for m in items)
+        end_times = [
+            m.get("close_time")
+            or m.get("end_date")
+            or m.get("expiry_time")
+            or m.get("latest_expiration_time")
+            for m in items
+        ]
         end_iso = None
         end_ts_epoch = None
         try:
@@ -110,11 +110,10 @@ def _group_by_title(markets: list[dict]) -> list[dict]:
                 end_ts_epoch = int(end_soonest.timestamp())
         except Exception:
             end_iso = None
-        # Derive a display title from the first market title, fallback to event_ticker
-        disp_title = str((items[0] or {}).get("title") or event_ticker or "Event").strip()
+        disp_title = str(e.get("title") or e.get("event_ticker") or "Event").strip()
         groups.append(
             {
-                "event_ticker": event_ticker,
+                "event_ticker": e.get("event_ticker"),
                 "display_title": disp_title,
                 "num_strikes": len(items),
                 "total_volume": total_vol,
@@ -123,39 +122,27 @@ def _group_by_title(markets: list[dict]) -> list[dict]:
                 "items": items,
             }
         )
-    # Sort by soonest end date first
     groups.sort(key=lambda g: int(g.get("end_ts") or (2**31 - 1)))
     return groups
 
 
 @st.cache_data(show_spinner=False)
-def _prepare_groups_cached(markets_json_key: str, markets_payload: list[dict]) -> list[dict]:
+def _prepare_groups_cached(events_json_key: str, events_payload: list[dict]) -> list[dict]:
     """
-    Returns grouped markets with:
-      - unique strikes per group (dedup by ticker)
-      - groups with > 1 strike only
+    Returns grouped events with:
+      - nested markets already active and deduped in client
+      - keep only events with > 1 strike
       - totals recomputed
       - sorted by soonest end date
-    Cached by the markets_json_key to avoid recomputation on selection reruns.
+    Cached by the events_json_key to avoid recomputation on selection reruns.
     """
-    groups = _group_by_title(markets_payload)
+    groups = _events_to_groups(events_payload)
     filtered_groups = []
     for g in groups:
-        by_ticker = {}
-        for m in g["items"]:
-            t = m.get("ticker")
-            if t and t not in by_ticker:
-                by_ticker[t] = m
-        unique_items = list(by_ticker.values())
-        if len(unique_items) <= 1:
+        # Items are already active & deduped by client method; enforce >1 strikes rule here
+        if len(g.get("items") or []) <= 1:
             continue
-        g_clean = {
-            **g,
-            "items": unique_items,
-            "num_strikes": len(unique_items),
-            "total_volume": sum(int(m.get("volume") or 0) for m in unique_items),
-        }
-        filtered_groups.append(g_clean)
+        filtered_groups.append(g)
     # Resort by soonest end date in case values changed
     filtered_groups.sort(key=lambda g: int(g.get("end_ts") or (2**31 - 1)))
     return filtered_groups
@@ -196,81 +183,103 @@ def main() -> None:
 
     with tab_main:
         try:
-            with st.spinner("Loading mention markets..."):
-                markets = _fetch_mention_markets_cached(cache_key)
+            with st.spinner("Loading mention events..."):
+                events = _fetch_mention_events_cached(cache_key)
         except Exception as e:
             st.error(f"Failed to load markets: {e}")
             return
 
-        if not markets:
-            st.info("No mention markets found. Showing a sample of active markets to verify connectivity.")
+        if not events:
+            st.info("No mention events found. Showing a sample of active markets to verify connectivity.")
             try:
                 client = KalshiClient()
                 any_resp = client.request_debug("GET", "/trade-api/v2/markets", params={"limit": 50, "status": "active"})
-                mk_items = any_resp.get("data", {}).get("markets") or any_resp.get("markets") or any_resp.get("data") or []
-                if isinstance(mk_items, dict) and "markets" in mk_items:
-                    mk_items = mk_items["markets"]
+                data_obj = any_resp.get("data", {})
+                mk_items = []
+                if isinstance(data_obj, dict):
+                    mk_items = data_obj.get("markets") or data_obj.get("data") or data_obj.get("items") or []
+                if not mk_items:
+                    mk_items = any_resp.get("markets") or any_resp.get("data") or []
+                if isinstance(mk_items, dict):
+                    # Normalize only if nested 'markets' exists; otherwise discard
+                    if "markets" in mk_items and isinstance(mk_items["markets"], list):
+                        mk_items = mk_items["markets"]
+                    else:
+                        mk_items = []
+                if not isinstance(mk_items, list):
+                    mk_items = []
                 if mk_items:
-                    markets = list(mk_items)[:50]
+                    # Build synthetic single-event to help debug rendering
+                    events = [
+                        {
+                            "event_ticker": "SAMPLE",
+                            "title": "Sample Active Markets",
+                            "markets": [m for m in mk_items if isinstance(m, dict)][:50],
+                        }
+                    ]
                 else:
                     st.warning("Active markets sample request returned no items.")
             except Exception as e:
                 st.error(f"Active markets sample error: {e}")
 
-        if markets:
+        if events:
             # Cache the grouped (by event) structure by a stable JSON key for speed on reruns
-            markets_key = hashlib.md5(json.dumps(markets, sort_keys=True).encode("utf-8")).hexdigest()
+            events_key = hashlib.md5(json.dumps(events, sort_keys=True).encode("utf-8")).hexdigest()
             # Reuse groups from session if payload hasn't changed to make card clicks instantaneous
             if (
-                st.session_state.get("mm_groups_key") == markets_key
+                st.session_state.get("mm_groups_key") == events_key
                 and isinstance(st.session_state.get("mm_groups"), list)
             ):
                 groups = st.session_state["mm_groups"]
             else:
-                groups = _prepare_groups_cached(markets_key, markets)
-                st.session_state["mm_groups_key"] = markets_key
+                groups = _prepare_groups_cached(events_key, events)
+                st.session_state["mm_groups_key"] = events_key
                 st.session_state["mm_groups"] = groups
                 st.session_state["mm_group_map"] = {g.get("event_ticker") or g.get("display_title"): g for g in groups}
 
             # Debug panel
             if debug_mode:
                 with st.expander("Debug: Active mention markets"):
-                    total_fetched = len(markets)
-                    uniq_series = len({str(m.get("series_ticker") or "") for m in markets})
-                    uniq_events = len({str(m.get("event_ticker") or "") for m in markets})
-                    status_counts = Counter([str(m.get("status") or "").lower() for m in markets])
-                    cat_counts = Counter([str(m.get("category") or "").lower() for m in markets])
-                    # Per-event strike counts
-                    ev_to_tickers = defaultdict(set)
-                    for m in markets:
-                        ev = str(m.get("event_ticker") or "")
-                        if not ev:
-                            ev = str(m.get("title") or m.get("ticker") or "Unknown")
-                        t = m.get("ticker")
-                        if t:
-                            ev_to_tickers[ev].add(t)
-                    ev_sizes = sorted([(ev, len(tks)) for ev, tks in ev_to_tickers.items()], key=lambda x: x[1], reverse=True)
-                    num_events_gt1 = sum(1 for _, n in ev_sizes if n > 1)
+                    ev_dicts = [e for e in events if isinstance(e, dict)]
+                    total_events = len(ev_dicts)
+                    non_dict_entries = len(events) - len(ev_dicts)
+                    # Count nested active markets and build distributions
+                    active_counts = []
+                    status_counts = Counter()
+                    cat_counts = Counter()
+                    for e in ev_dicts:
+                        mkts = [m for m in (e.get("markets") or []) if isinstance(m, dict)]
+                        active = [m for m in mkts if str(m.get("status", "")).lower() == "active"]
+                        active_counts.append(len(active))
+                        for m in active:
+                            status_counts.update([str(m.get("status") or "").lower()])
+                            cat_counts.update([str(m.get("category") or "").lower()])
+                    num_events_gt1 = sum(1 for n in active_counts if n > 1)
                     st.write(
                         {
-                            "fetched_markets": total_fetched,
-                            "unique_series": uniq_series,
-                            "unique_events": uniq_events,
+                            "fetched_events_dicts": total_events,
+                            "non_dict_entries": non_dict_entries,
+                            "events_with_>1_strikes": num_events_gt1,
+                            "events_total": total_events,
                             "status_counts": dict(status_counts),
                             "category_counts": dict(cat_counts),
-                            "events_with_>1_strikes": num_events_gt1,
-                            "events_total": len(ev_sizes),
                         }
                     )
-                    if total_fetched > 0:
+                    if ev_dicts:
                         # Show a small sample of rows
-                        sample_cols = ["ticker", "event_ticker", "series_ticker", "title", "status", "category", "yes_bid", "no_bid"]
                         sample_rows = []
-                        for m in markets[:10]:
-                            sample_rows.append({k: m.get(k) for k in sample_cols})
-                        st.caption("Sample markets (first 10)")
+                        for e in ev_dicts[:5]:
+                            sample_rows.append(
+                                {
+                                    "event_ticker": e.get("event_ticker"),
+                                    "title": e.get("title"),
+                                    "series_ticker": e.get("series_ticker"),
+                                    "num_nested_markets": len(e.get("markets") or []),
+                                }
+                            )
+                        st.caption("Sample events (first 5)")
                         st.dataframe(pd.DataFrame(sample_rows), hide_index=True, use_container_width=True)
-                    if len(groups) == 0 and total_fetched > 0:
+                    if len(groups) == 0 and total_events > 0:
                         st.warning("No event cards after grouping. Likely cause: all events have <=1 strike and are filtered out by the UI rule (require >1).")
 
             # Preload tags for all first tickers (single DB roundtrip, cached in session for 5 minutes)
@@ -408,7 +417,7 @@ def main() -> None:
                                 "No Ask (¢)": m.get("no_ask"),
                                 "Volume": m.get("volume"),
                                 "Open Interest": m.get("open_interest"),
-                                "End Date": m.get("close_time") or m.get("end_date") or m.get("expiry_time"),
+                                "End Date": m.get("close_time") or m.get("end_date") or m.get("expiry_time") or m.get("latest_expiration_time"),
                             }
                         )
                     df = pd.DataFrame(rows)

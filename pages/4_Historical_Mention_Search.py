@@ -103,17 +103,19 @@ def main() -> None:
         except Exception as e:
             st.error(f"Failed to fetch history: {e}")
             return
-    groups = _group_by_event(data)
+    hist_dicts = [m for m in data if isinstance(m, dict)]
+    groups = _group_by_event(hist_dicts)
 
     if debug_mode:
         with st.expander("Debug: Historical mention markets"):
-            total_fetched = len(data)
-            uniq_series = len({str(m.get("series_ticker") or "") for m in data})
-            uniq_events = len({str(m.get("event_ticker") or "") for m in data})
-            status_counts = Counter([str(m.get("status") or "").lower() for m in data])
-            res_counts = Counter([str((m.get("result") or "")).lower() for m in data])
+            total_fetched = len(hist_dicts)
+            non_dict_entries = len(data) - len(hist_dicts)
+            uniq_series = len({str(m.get("series_ticker") or "") for m in hist_dicts})
+            uniq_events = len({str(m.get("event_ticker") or "") for m in hist_dicts})
+            status_counts = Counter([str(m.get("status") or "").lower() for m in hist_dicts])
+            res_counts = Counter([str((m.get("result") or "")).lower() for m in hist_dicts])
             ev_to_tickers = defaultdict(set)
-            for m in data:
+            for m in hist_dicts:
                 ev = str(m.get("event_ticker") or "")
                 if not ev:
                     ev = str(m.get("title") or m.get("ticker") or "Unknown")
@@ -124,7 +126,8 @@ def main() -> None:
             num_events_gt1 = sum(1 for _, n in ev_sizes if n > 1)
             st.write(
                 {
-                    "fetched_markets": total_fetched,
+                    "fetched_markets_dicts": total_fetched,
+                    "non_dict_entries": non_dict_entries,
                     "unique_series": uniq_series,
                     "unique_events": uniq_events,
                     "status_counts": dict(status_counts),
@@ -134,10 +137,10 @@ def main() -> None:
                     "groups_count": len(groups),
                 }
             )
-            if total_fetched > 0:
+            if hist_dicts:
                 sample_cols = ["ticker", "event_ticker", "series_ticker", "title", "status", "result", "close_time"]
                 sample_rows = []
-                for m in data[:10]:
+                for m in hist_dicts[:10]:
                     sample_rows.append({k: m.get(k) for k in sample_cols})
                 st.caption("Sample historical markets (first 10)")
                 st.dataframe(pd.DataFrame(sample_rows), hide_index=True, use_container_width=True)

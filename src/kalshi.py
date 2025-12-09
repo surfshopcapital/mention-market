@@ -175,6 +175,29 @@ class KalshiClient(KalshiHistoryMixin):
             raise RuntimeError(f"Kalshi markets request failed: {status} {data}")
         return data
 
+    def list_events(
+        self,
+        *,
+        series_ticker: Optional[str] = None,
+        limit: int = 200,
+        cursor: Optional[str] = None,
+        with_nested_markets: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Fetch events. When with_nested_markets is True, response includes 'markets' array per event.
+        """
+        params: Dict[str, Any] = {"limit": limit}
+        if series_ticker:
+            params["series_ticker"] = series_ticker
+        if cursor:
+            params["cursor"] = cursor
+        if with_nested_markets:
+            params["with_nested_markets"] = "true"
+        status, data = self._request("GET", "/trade-api/v2/events", params=params)
+        if status != 200:
+            raise RuntimeError(f"Kalshi events request failed: {status} {data}")
+        return data
+
     def list_markets_paginated(
         self,
         *,
@@ -313,6 +336,93 @@ class KalshiClient(KalshiHistoryMixin):
             return filtered_cat or _filter_mention_like(all_markets)
         except Exception:
             return []
+
+    def list_mention_events_active(self) -> List[Dict[str, Any]]:
+        """
+        Returns events (with nested markets) that are mention-like and currently have > 1 active markets.
+        """
+        try:
+            series_tickers = self.find_mention_series_tickers()
+        except Exception:
+            series_tickers = []
+        events: List[Dict[str, Any]] = []
+        # Fetch by candidate series to reduce scope
+        if series_tickers:
+            for stkr in series_tickers:
+                try:
+                    data = self.list_events(series_ticker=stkr, limit=200, with_nested_markets=True)
+                    evs = data.get("events", []) or data.get("data", []) or []
+                    if isinstance(evs, list):
+                        events.extend(evs)
+                except Exception:
+                    continue
+        # Fallback global fetch if necessary
+        if not events:
+            try:
+                data = self.list_events(limit=200, with_nested_markets=True)
+                evs = data.get("events", []) or data.get("data", []) or []
+                if isinstance(evs, list):
+                    events.extend(evs)
+            except Exception:
+                pass
+        # Filter to mention-like at event or nested market level
+        filtered: List[Dict[str, Any]] = []
+        for e in events:
+            if not isinstance(e, dict):
+                continue
+            title = str(e.get("title", "")).lower()
+            series_ticker = str(e.get("series_ticker", "")).lower()
+            ev_ticker = str(e.get("event_ticker", "")).lower()
+            markets = e.get("markets") or []
+            is_mention_event = (
+                "mention" in title
+                or " say " in f" {title} "
+                or "mention" in series_ticker
+                or "say" in series_ticker
+                or "mention" in ev_ticker
+                or "say" in ev_ticker
+            )
+            # Or any nested market qualifies
+            if not is_mention_event:
+                for m in markets or []:
+                    if not isinstance(m, dict):
+                        continue
+                    cat = str(m.get("category", "")).lower()
+                    mtitle = str(m.get("title", "")).lower()
+                    mtick = str(m.get("ticker", "")).lower()
+                    if (
+                        cat == "mentions"
+                        or "mention" in mtitle
+                        or " say " in f" {mtitle} "
+                        or "mention" in mtick
+                        or "say" in mtick
+                    ):
+                        is_mention_event = True
+                        break
+            if not is_mention_event:
+                continue
+            # Keep only active markets and dedupe by ticker
+            by_ticker: Dict[str, Dict[str, Any]] = {}
+            for m in (markets or []):
+                if not isinstance(m, dict):
+                    continue
+                if str(m.get("status", "")).lower() != "active":
+                    continue
+                t = m.get("ticker")
+                if t and t not in by_ticker:
+                    by_ticker[t] = m
+            active_markets = list(by_ticker.values())
+            if len(active_markets) <= 1:
+                continue
+            # Return event with filtered markets
+            filtered.append({**e, "markets": active_markets})
+        # Deduplicate by event_ticker
+        by_evt: Dict[str, Dict[str, Any]] = {}
+        for e in filtered:
+            t = e.get("event_ticker")
+            if t and t not in by_evt:
+                by_evt[t] = e
+        return list(by_evt.values())
 
 
 def _filter_mention_like(markets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
