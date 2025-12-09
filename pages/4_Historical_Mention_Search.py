@@ -4,6 +4,7 @@ from typing import List, Dict
 
 import pandas as pd
 import streamlit as st
+from collections import Counter, defaultdict
 
 from src.kalshi import KalshiClient
 from src.db import get_session, init_db
@@ -89,6 +90,7 @@ def main() -> None:
         manual = st.button("Search / Refresh", type="primary", use_container_width=True)
     with top_controls[1]:
         months = st.selectbox("Lookback (months)", options=[3, 6, 12], index=2)
+    debug_mode = st.checkbox("Show debug", value=False)
 
     # Only search when there is a query or tag
     if not (q.strip() or tag_q.strip()):
@@ -102,6 +104,43 @@ def main() -> None:
             st.error(f"Failed to fetch history: {e}")
             return
     groups = _group_by_event(data)
+
+    if debug_mode:
+        with st.expander("Debug: Historical mention markets"):
+            total_fetched = len(data)
+            uniq_series = len({str(m.get("series_ticker") or "") for m in data})
+            uniq_events = len({str(m.get("event_ticker") or "") for m in data})
+            status_counts = Counter([str(m.get("status") or "").lower() for m in data])
+            res_counts = Counter([str((m.get("result") or "")).lower() for m in data])
+            ev_to_tickers = defaultdict(set)
+            for m in data:
+                ev = str(m.get("event_ticker") or "")
+                if not ev:
+                    ev = str(m.get("title") or m.get("ticker") or "Unknown")
+                t = m.get("ticker")
+                if t:
+                    ev_to_tickers[ev].add(t)
+            ev_sizes = sorted([(ev, len(tks)) for ev, tks in ev_to_tickers.items()], key=lambda x: x[1], reverse=True)
+            num_events_gt1 = sum(1 for _, n in ev_sizes if n > 1)
+            st.write(
+                {
+                    "fetched_markets": total_fetched,
+                    "unique_series": uniq_series,
+                    "unique_events": uniq_events,
+                    "status_counts": dict(status_counts),
+                    "result_counts": dict(res_counts),
+                    "events_with_>1_strikes": num_events_gt1,
+                    "events_total": len(ev_sizes),
+                    "groups_count": len(groups),
+                }
+            )
+            if total_fetched > 0:
+                sample_cols = ["ticker", "event_ticker", "series_ticker", "title", "status", "result", "close_time"]
+                sample_rows = []
+                for m in data[:10]:
+                    sample_rows.append({k: m.get(k) for k in sample_cols})
+                st.caption("Sample historical markets (first 10)")
+                st.dataframe(pd.DataFrame(sample_rows), hide_index=True, use_container_width=True)
 
     # Bulk tag fetch for first tickers of each group
     tickers = [g["items"][0].get("ticker") for g in groups if g.get("items")]

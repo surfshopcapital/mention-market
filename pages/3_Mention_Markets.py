@@ -5,6 +5,7 @@ import json
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
+from collections import Counter, defaultdict
 
 from src.kalshi import KalshiClient
 from src.config import get_kalshi_api_base_url
@@ -176,6 +177,7 @@ def main() -> None:
         refresh_sec = st.slider("Auto-refresh interval (seconds)", min_value=0, max_value=600, value=300, step=30)
         _ = st.caption("Set to 0 to disable auto-refresh.")
         manual = st.button("Refresh now", type="primary", use_container_width=True)
+        debug_mode = st.checkbox("Show debug", value=False)
 
     # Build a cache key that updates when user refreshes or interval elapses
     cache_key = "v1"
@@ -229,6 +231,47 @@ def main() -> None:
                 st.session_state["mm_groups_key"] = markets_key
                 st.session_state["mm_groups"] = groups
                 st.session_state["mm_group_map"] = {g.get("event_ticker") or g.get("display_title"): g for g in groups}
+
+            # Debug panel
+            if debug_mode:
+                with st.expander("Debug: Active mention markets"):
+                    total_fetched = len(markets)
+                    uniq_series = len({str(m.get("series_ticker") or "") for m in markets})
+                    uniq_events = len({str(m.get("event_ticker") or "") for m in markets})
+                    status_counts = Counter([str(m.get("status") or "").lower() for m in markets])
+                    cat_counts = Counter([str(m.get("category") or "").lower() for m in markets])
+                    # Per-event strike counts
+                    ev_to_tickers = defaultdict(set)
+                    for m in markets:
+                        ev = str(m.get("event_ticker") or "")
+                        if not ev:
+                            ev = str(m.get("title") or m.get("ticker") or "Unknown")
+                        t = m.get("ticker")
+                        if t:
+                            ev_to_tickers[ev].add(t)
+                    ev_sizes = sorted([(ev, len(tks)) for ev, tks in ev_to_tickers.items()], key=lambda x: x[1], reverse=True)
+                    num_events_gt1 = sum(1 for _, n in ev_sizes if n > 1)
+                    st.write(
+                        {
+                            "fetched_markets": total_fetched,
+                            "unique_series": uniq_series,
+                            "unique_events": uniq_events,
+                            "status_counts": dict(status_counts),
+                            "category_counts": dict(cat_counts),
+                            "events_with_>1_strikes": num_events_gt1,
+                            "events_total": len(ev_sizes),
+                        }
+                    )
+                    if total_fetched > 0:
+                        # Show a small sample of rows
+                        sample_cols = ["ticker", "event_ticker", "series_ticker", "title", "status", "category", "yes_bid", "no_bid"]
+                        sample_rows = []
+                        for m in markets[:10]:
+                            sample_rows.append({k: m.get(k) for k in sample_cols})
+                        st.caption("Sample markets (first 10)")
+                        st.dataframe(pd.DataFrame(sample_rows), hide_index=True, use_container_width=True)
+                    if len(groups) == 0 and total_fetched > 0:
+                        st.warning("No event cards after grouping. Likely cause: all events have <=1 strike and are filtered out by the UI rule (require >1).")
 
             # Preload tags for all first tickers (single DB roundtrip, cached in session for 5 minutes)
             tickers_for_tags: list[str] = [g["items"][0].get("ticker") for g in groups if g.get("items")]
