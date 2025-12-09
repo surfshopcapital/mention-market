@@ -72,7 +72,63 @@ def _bootstrap_events(months: int, cache_key: str) -> List[dict]:
     cache_key lets us force refresh when the user clicks Search/Refresh.
     """
     client = KalshiClient()
-    return client.list_mention_events_window_events_api(months=months, statuses=["closed", "settled", "determined"])
+    try:
+        return client.list_mention_events_window_events_api(months=months, statuses=["closed", "settled", "determined"])
+    except AttributeError:
+        # Fallback: build from Events API directly in-page (identical logic)
+        import pandas as _pd
+        earliest_ts = int((_pd.Timestamp.utcnow() - _pd.Timedelta(days=30 * max(months, 1))).timestamp())
+        latest_ts = int(_pd.Timestamp.utcnow().timestamp())
+        statuses = ["closed", "settled", "determined"]
+        collected: List[dict] = []
+        for s in statuses:
+            try:
+                evs = client.list_events_paginated(
+                    per_page=100,
+                    max_pages=100,
+                    with_nested_markets=True,
+                    status_filter=s,
+                    min_close_ts=earliest_ts,
+                    max_close_ts=latest_ts,
+                )
+                if evs:
+                    collected.extend(evs)
+            except Exception:
+                continue
+        # mention-like filter
+        filtered: List[dict] = []
+        for e in collected:
+            if not isinstance(e, dict):
+                continue
+            title = str(e.get("title", "")).lower()
+            series_ticker = str(e.get("series_ticker", "")).lower()
+            ev_ticker = str(e.get("event_ticker", "")).lower()
+            mkts = [m for m in (e.get("markets") or []) if isinstance(m, dict)]
+            is_mention = (
+                "mention" in title
+                or " say " in f" {title} "
+                or "mention" in series_ticker
+                or "say" in series_ticker
+                or "mention" in ev_ticker
+                or "say" in ev_ticker
+            )
+            if not is_mention:
+                for m in mkts:
+                    cat = str(m.get("category", "")).lower()
+                    mtitle = str(m.get("title", "")).lower()
+                    mtick = str(m.get("ticker", "")).lower()
+                    if cat == "mentions" or "mention" in mtitle or " say " in f" {mtitle} " or "mention" in mtick or "say" in mtick:
+                        is_mention = True
+                        break
+            if is_mention:
+                filtered.append(e)
+        # dedupe
+        by_evt: Dict[str, dict] = {}
+        for e in filtered:
+            t = e.get("event_ticker")
+            if t and t not in by_evt:
+                by_evt[t] = e
+        return list(by_evt.values())
 
 @st.cache_data(show_spinner=False, ttl=300)
 def _fetch_history(term: str, months: int, include_closed: bool, cache_key: str) -> List[dict]:
