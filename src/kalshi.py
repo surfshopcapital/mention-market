@@ -567,6 +567,60 @@ class KalshiClient(KalshiHistoryMixin):
                 by_evt[t] = e
         return list(by_evt.values())
 
+    def list_mention_events_window(self, *, months: int = 12) -> List[Dict[str, Any]]:
+        """
+        BROAD bootstrap fetch: mention-like events within a months window, with nested markets preserved.
+        Includes ALL market statuses; the caller can filter later for 'closed/settled/determined' etc.
+        Intended for preloading and caching to speed up historical searches.
+        """
+        import pandas as _pd
+        earliest_ts = int((_pd.Timestamp.utcnow() - _pd.Timedelta(days=30 * max(months, 1))).timestamp())
+        events = self.list_events_paginated(per_page=100, max_pages=100, with_nested_markets=True, earliest_close_ts=None)
+        results: List[Dict[str, Any]] = []
+        for e in events:
+            if not isinstance(e, dict):
+                continue
+            title = str(e.get("title", "")).lower()
+            series_ticker_l = str(e.get("series_ticker", "")).lower()
+            ev_ticker_l = str(e.get("event_ticker", "")).lower()
+            is_mention_event = (
+                "mention" in title
+                or " say " in f" {title} "
+                or "mention" in series_ticker_l
+                or "say" in series_ticker_l
+                or "mention" in ev_ticker_l
+                or "say" in ev_ticker_l
+            )
+            mkts = [m for m in (e.get("markets") or []) if isinstance(m, dict)]
+            if not is_mention_event:
+                for m in mkts:
+                    cat = str(m.get("category", "")).lower()
+                    mtitle = str(m.get("title", "")).lower()
+                    mtick = str(m.get("ticker", "")).lower()
+                    if cat == "mentions" or "mention" in mtitle or " say " in f" {mtitle} " or "mention" in mtick or "say" in mtick:
+                        is_mention_event = True
+                        break
+            if not is_mention_event:
+                continue
+            # Keep only markets whose end is within the window (any status)
+            filt: List[Dict[str, Any]] = []
+            for m in mkts:
+                t = m.get("close_time") or m.get("end_date") or m.get("expiry_time") or m.get("latest_expiration_time")
+                ts = _pd.to_datetime(t, utc=True, errors="coerce")
+                if ts is None or _pd.isna(ts) or int(ts.timestamp()) < earliest_ts:
+                    continue
+                filt.append(m)
+            if not filt:
+                continue
+            results.append({**e, "markets": filt})
+        # Deduplicate by event
+        by_evt: Dict[str, Dict[str, Any]] = {}
+        for e in results:
+            t = e.get("event_ticker")
+            if t and t not in by_evt:
+                by_evt[t] = e
+        return list(by_evt.values())
+
     def list_mention_events_closed_recent(self, *, limit: int = 12) -> List[Dict[str, Any]]:
         """
         Most recent mention-like events that have at least one market in statuses

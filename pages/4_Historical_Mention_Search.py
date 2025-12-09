@@ -65,16 +65,45 @@ def _group_by_event(markets: List[dict]) -> List[dict]:
     return groups
 
 
-@st.cache_data(show_spinner=False, ttl=300)
-def _fetch_history(term: str, months: int, include_closed: bool) -> List[dict]:
+@st.cache_data(show_spinner=False, ttl=1200)
+def _bootstrap_events(months: int, cache_key: str) -> List[dict]:
+    """
+    Preload mention-like events within window, including all statuses.
+    cache_key lets us force refresh when the user clicks Search/Refresh.
+    """
     client = KalshiClient()
-    # Use events-based not-active fetch for broader recall, then flatten to markets
-    evs = client.list_mention_events_not_active(text_term=term, months=months, include_closed=include_closed)
+    return client.list_mention_events_window(months=months)
+
+@st.cache_data(show_spinner=False, ttl=300)
+def _fetch_history(term: str, months: int, include_closed: bool, cache_key: str) -> List[dict]:
+    # Filter within preloaded events; then flatten to markets
+    all_events = _bootstrap_events(months, cache_key)
+    needle = (term or "").strip().lower()
+    allowed = {"settled", "determined"} if not include_closed else {"closed", "settled", "determined"}
     markets: List[dict] = []
-    for e in evs:
-        for m in e.get("markets") or []:
-            if isinstance(m, dict):
-                markets.append(m)
+    for e in all_events:
+        mkts = [m for m in (e.get("markets") or []) if isinstance(m, dict)]
+        if needle:
+            hay = " ".join([
+                str(e.get("title", "")),
+                str(e.get("series_ticker", "")),
+                str(e.get("event_ticker", "")),
+            ]).lower()
+            # keep if event matches OR any market matches
+            ev_match = (needle in hay)
+            if not ev_match:
+                mkts2 = []
+                for m in mkts:
+                    mhay = " ".join([
+                        str(m.get("title","")), str(m.get("subtitle","")), str(m.get("yes_sub_title","")),
+                        str(m.get("no_sub_title","")), str(m.get("ticker",""))
+                    ]).lower()
+                    if needle in mhay:
+                        mkts2.append(m)
+                mkts = mkts2
+        # Filter allowed statuses
+        mkts = [m for m in mkts if str(m.get("status","")).lower() in allowed]
+        markets.extend(mkts)
     return markets
 
 @st.cache_data(show_spinner=False, ttl=180)
@@ -108,10 +137,37 @@ def main() -> None:
     include_closed = st.checkbox("Include closed (no final result yet)", value=False)
 
     # Default: If no query or tag, show recent closed mention markets (cards; 6 per row)
+    # Build refresh-aware cache key
+    cache_key = "v1"
+    if manual:
+        cache_key = f"v1_force_{int(pd.Timestamp.utcnow().timestamp())}"
+
     if not (q.strip() or tag_q.strip()):
         st.subheader("Recent closed mention events")
         try:
-            recent_events = _fetch_recent_closed_events(limit=12)
+            # Use preloaded events to derive recent closed (fewer API calls)
+            evs = _bootstrap_events(months, cache_key)
+            # Filter to allowed statuses and sort by latest end
+            allowed = {"closed", "settled", "determined"}
+            def to_latest_ts(e: dict) -> int:
+                ts_list = []
+                for m in (e.get("markets") or []):
+                    if str(m.get("status","")).lower() not in allowed:
+                        continue
+                    t = m.get("close_time") or m.get("end_date") or m.get("expiry_time") or m.get("latest_expiration_time")
+                    ts = pd.to_datetime(t, utc=True, errors="coerce")
+                    if ts is not None and not pd.isna(ts):
+                        ts_list.append(int(ts.timestamp()))
+                return max(ts_list) if ts_list else 0
+            evs_sorted = sorted(evs, key=to_latest_ts, reverse=True)
+            # Keep only events that have at least one allowed-status market
+            recent_events = []
+            for e in evs_sorted:
+                mkts = [m for m in (e.get("markets") or []) if isinstance(m, dict) and str(m.get("status","")).lower() in allowed]
+                if mkts:
+                    recent_events.append({**e, "markets": mkts})
+                if len(recent_events) >= 12:
+                    break
         except Exception as e:
             st.error(f"Failed to fetch recent closed: {e}")
             return
@@ -151,8 +207,8 @@ def main() -> None:
                     st.markdown(
                         f"""
                         <div style="background:#fff;border:1px solid #e0e0e0;border-radius:10px;padding:10px;margin-bottom:6px;">
-                          <div style="font-weight:600;margin-bottom:6px;line-height:1.2">{str(e.get("title") or e.get("event_ticker") or "")}</div>
-                          <div style="font-size:12px;color:#555;line-height:1.4">
+                          <div style="font-weight:600;margin-bottom:6px;line-height:1.2;color:#000">{str(e.get("title") or e.get("event_ticker") or "")}</div>
+                          <div style="font-size:12px;color:#000;line-height:1.4">
                             <div>Event: <b>{e.get("event_ticker")}</b></div>
                             <div>Markets: <b>{len(mkts)}</b></div>
                             <div>Statuses: <b>{statuses}</b></div>
@@ -162,15 +218,57 @@ def main() -> None:
                         """,
                         unsafe_allow_html=True,
                     )
+                    # View button for nested markets
+                    if st.button("View", key=f"recent_view_{e.get('event_ticker') or i}"):
+                        st.session_state["hist_selected_recent_event"] = e.get("event_ticker") or str(i)
+        # If a recent event is selected, render nested markets table
+        sel_evt = st.session_state.get("hist_selected_recent_event")
+        if sel_evt:
+            match = None
+            for e in recent_events:
+                if (e.get("event_ticker") or "") == sel_evt or (str(sel_evt) == str(recent_events.index(e))):
+                    match = e
+                    break
+            if match:
+                rows = []
+                for m in [mm for mm in (match.get("markets") or []) if isinstance(mm, dict)]:
+                    res = (m.get("result") or "").strip()
+                    res_disp = res.upper() if res else ""
+                    said = "Said" if res_disp == "YES" else ("Not said" if res_disp == "NO" else "")
+                    rows.append(
+                        {
+                            "Word": (m.get("subtitle") or m.get("yes_sub_title") or m.get("no_sub_title") or ""),
+                            "Final volume": m.get("volume"),
+                            "Result": res_disp,
+                            "Said?": said,
+                            "End": pd.to_datetime(m.get("close_time") or m.get("end_date") or m.get("expiry_time") or m.get("latest_expiration_time"), utc=True, errors="coerce"),
+                            "Ticker": m.get("ticker"),
+                        }
+                    )
+                df = pd.DataFrame(rows)
+                if "End" in df.columns:
+                    df["End"] = df["End"].dt.strftime("%b %d, %Y %H:%M UTC")
+                cols = [c for c in ["Word", "Final volume", "Result", "Said?", "End", "Ticker"] if c in df.columns]
+                st.dataframe(df[cols], width="stretch", hide_index=True)
         return
 
     with st.spinner("Searching historical markets..."):
         try:
-            data = _fetch_history(q.strip().lower(), int(months), include_closed)
+            data = _fetch_history(q.strip().lower(), int(months), include_closed, cache_key)
         except Exception as e:
             st.error(f"Failed to fetch history: {e}")
             return
     hist_dicts = [m for m in data if isinstance(m, dict)]
+    # Fallback to markets-based final/hybrid fetch if events route returned nothing
+    if not hist_dicts:
+        try:
+            client = KalshiClient()
+            fallback = client.list_mention_markets_historical(text_term=q.strip().lower(), months=int(months), include_closed=include_closed)
+            hist_dicts = [m for m in fallback if isinstance(m, dict)]
+            if debug_mode:
+                st.info("Fallback: Using markets-based historical fetch due to empty events result.")
+        except Exception:
+            pass
     groups = _group_by_event(hist_dicts)
 
     if debug_mode:
@@ -257,8 +355,8 @@ def main() -> None:
                 st.markdown(
                     f"""
                     <div style="background:#f8f9fa;border:1px solid #e0e0e0;border-radius:10px;padding:10px;margin-bottom:6px;">
-                      <div style="font-weight:600;margin-bottom:6px;line-height:1.2">{g.get('display_title') or g.get('event_ticker')}</div>
-                      <div style="font-size:12px;color:#555;">Final volume: <b>{int(g['total_volume']):,}</b></div>
+                      <div style="font-weight:600;margin-bottom:6px;line-height:1.2;color:#000">{g.get('display_title') or g.get('event_ticker')}</div>
+                      <div style="font-size:12px;color:#000;">Final volume: <b>{int(g['total_volume']):,}</b></div>
                     </div>
                     """,
                     unsafe_allow_html=True,
