@@ -342,7 +342,7 @@ def main() -> None:
                         st.markdown(
                             f"""
                             <div style="background:{bg};border:1px solid {border};border-radius:10px;padding:12px;margin-bottom:6px;">
-                              <div style="font-weight:600;margin-bottom:6px;">{g.get('display_title') or g.get('event_ticker')}</div>
+                              <div style="font-weight:600;margin-bottom:6px;color:#000;">{g.get('display_title') or g.get('event_ticker')}</div>
                               <div style="display:flex;gap:16px;font-size:12px;color:#000;">
                                 <div>Strikes: <b>{g['num_strikes']}</b></div>
                                 <div>Volume: <b>{int(g['total_volume']):,}</b></div>

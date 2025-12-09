@@ -46,6 +46,8 @@ class KalshiHistoryMixin:
                     per_page=500,
                     max_pages=20,
                     earliest_close_ts=earliest_ts,
+                    min_close_ts=earliest_ts,
+                    max_close_ts=int(_pd.Timestamp.utcnow().timestamp()),
                 )
                 if items:
                     combined.extend(items)
@@ -90,6 +92,42 @@ class KalshiHistoryMixin:
             if t and t not in by_ticker:
                 by_ticker[t] = m
         return list(by_ticker.values())[: max(0, int(limit))]
+
+    def list_mention_markets_window(
+        self,
+        *,
+        months: int = 12,
+        statuses: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Markets-based bootstrap for a time window using Kalshi's min/max_close_ts.
+        """
+        import pandas as _pd
+        earliest_ts = int((_pd.Timestamp.utcnow() - _pd.Timedelta(days=30 * max(months, 1))).timestamp())
+        latest_ts = int(_pd.Timestamp.utcnow().timestamp())
+        if not statuses:
+            statuses = ["closed", "settled", "determined"]
+        combined: List[Dict[str, Any]] = []
+        for s in statuses:
+            try:
+                items = self.list_markets_paginated(
+                    status_filter=s,
+                    per_page=500,
+                    max_pages=50,
+                    min_close_ts=earliest_ts,
+                    max_close_ts=latest_ts,
+                )
+                if items:
+                    combined.extend(items)
+            except Exception:
+                continue
+        # Dedup by ticker
+        by_ticker: Dict[str, Dict[str, Any]] = {}
+        for m in combined:
+            t = m.get("ticker")
+            if t and t not in by_ticker:
+                by_ticker[t] = m
+        return list(by_ticker.values())
 
 
 class KalshiClient(KalshiHistoryMixin):
@@ -194,6 +232,8 @@ class KalshiClient(KalshiHistoryMixin):
         status_filter: Optional[str] = None,
         limit: int = 200,
         cursor: Optional[str] = None,
+        min_close_ts: Optional[int] = None,
+        max_close_ts: Optional[int] = None,
     ) -> Dict[str, Any]:
         params: Dict[str, Any] = {"limit": limit}
         if series_ticker:
@@ -203,6 +243,10 @@ class KalshiClient(KalshiHistoryMixin):
             params["status"] = status_filter
         if cursor:
             params["cursor"] = cursor
+        if min_close_ts is not None:
+            params["min_close_ts"] = int(min_close_ts)
+        if max_close_ts is not None:
+            params["max_close_ts"] = int(max_close_ts)
         status, data = self._request("GET", "/trade-api/v2/markets", params=params)
         if status != 200:
             raise RuntimeError(f"Kalshi markets request failed: {status} {data}")
@@ -266,6 +310,8 @@ class KalshiClient(KalshiHistoryMixin):
         per_page: int = 500,
         max_pages: int = 20,
         earliest_close_ts: Optional[int] = None,
+        min_close_ts: Optional[int] = None,
+        max_close_ts: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """
         Fetch multiple pages of markets to cover historical queries.
@@ -275,7 +321,14 @@ class KalshiClient(KalshiHistoryMixin):
         all_items: List[Dict[str, Any]] = []
         cursor: Optional[str] = None
         for _ in range(max_pages):
-            data = self.list_markets(series_ticker=series_ticker, status_filter=status_filter, limit=per_page, cursor=cursor)
+            data = self.list_markets(
+                series_ticker=series_ticker,
+                status_filter=status_filter,
+                limit=per_page,
+                cursor=cursor,
+                min_close_ts=min_close_ts,
+                max_close_ts=max_close_ts,
+            )
             items = data.get("markets", []) or data.get("data", []) or []
             if not items:
                 break
