@@ -231,6 +231,45 @@ class KalshiClient(KalshiHistoryMixin):
             raise RuntimeError(f"Kalshi events request failed: {status} {data}")
         return data
 
+    def list_events_paginated(
+        self,
+        *,
+        series_ticker: Optional[str] = None,
+        per_page: int = 200,
+        max_pages: int = 50,
+        with_nested_markets: bool = True,
+        earliest_close_ts: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Paginate through events; optionally include nested markets.
+        If earliest_close_ts is provided, stops when an event contains any market
+        with close time older than that threshold.
+        """
+        all_events: List[Dict[str, Any]] = []
+        cursor: Optional[str] = None
+        for _ in range(max_pages):
+            data = self.list_events(series_ticker=series_ticker, limit=per_page, cursor=cursor, with_nested_markets=with_nested_markets)
+            evs = data.get("events", []) or data.get("data", []) or []
+            if not evs:
+                break
+            all_events.extend(evs)
+            cursor = data.get("cursor")
+            if earliest_close_ts is not None:
+                import pandas as _pd
+                # Find oldest close time among nested markets in this page
+                page_oldest: List[int] = []
+                for e in evs:
+                    for m in (e.get("markets") or []):
+                        t = m.get("close_time") or m.get("end_date") or m.get("expiry_time") or m.get("latest_expiration_time")
+                        ts = _pd.to_datetime(t, utc=True, errors="coerce")
+                        if ts is not None and not _pd.isna(ts):
+                            page_oldest.append(int(ts.timestamp()))
+                if page_oldest and min(page_oldest) < int(earliest_close_ts):
+                    break
+            if not cursor:
+                break
+        return all_events
+
     def list_markets_paginated(
         self,
         *,
@@ -452,6 +491,88 @@ class KalshiClient(KalshiHistoryMixin):
         # Deduplicate by event_ticker
         by_evt: Dict[str, Dict[str, Any]] = {}
         for e in filtered:
+            t = e.get("event_ticker")
+            if t and t not in by_evt:
+                by_evt[t] = e
+        return list(by_evt.values())
+
+    def list_mention_events_not_active(
+        self,
+        *,
+        text_term: Optional[str] = None,
+        months: int = 12,
+        include_closed: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """
+        Returns mention-like events with nested markets filtered to NOT ACTIVE.
+        When include_closed is False, returns only settled/determined markets.
+        """
+        import pandas as _pd
+        earliest_ts = int((_pd.Timestamp.utcnow() - _pd.Timedelta(days=30 * max(months, 1))).timestamp())
+        events = self.list_events_paginated(per_page=200, max_pages=50, with_nested_markets=True, earliest_close_ts=earliest_ts)
+        results: List[Dict[str, Any]] = []
+        for e in events:
+            if not isinstance(e, dict):
+                continue
+            title = str(e.get("title", "")).lower()
+            series_ticker_l = str(e.get("series_ticker", "")).lower()
+            ev_ticker_l = str(e.get("event_ticker", "")).lower()
+            is_mention_event = (
+                "mention" in title
+                or " say " in f" {title} "
+                or "mention" in series_ticker_l
+                or "say" in series_ticker_l
+                or "mention" in ev_ticker_l
+                or "say" in ev_ticker_l
+            )
+            mkts = [m for m in (e.get("markets") or []) if isinstance(m, dict)]
+            if not is_mention_event:
+                for m in mkts:
+                    cat = str(m.get("category", "")).lower()
+                    mtitle = str(m.get("title", "")).lower()
+                    mtick = str(m.get("ticker", "")).lower()
+                    if cat == "mentions" or "mention" in mtitle or " say " in f" {mtitle} " or "mention" in mtick or "say" in mtick:
+                        is_mention_event = True
+                        break
+            if not is_mention_event:
+                continue
+            # Filter to not-active statuses
+            allowed = {"settled", "determined"} if not include_closed else {"closed", "settled", "determined"}
+            filt_mkts: List[Dict[str, Any]] = []
+            for m in mkts:
+                st = str(m.get("status", "")).lower()
+                if st not in allowed:
+                    continue
+                # Months lookback per market end
+                t = m.get("close_time") or m.get("end_date") or m.get("expiry_time") or m.get("latest_expiration_time")
+                ts = _pd.to_datetime(t, utc=True, errors="coerce")
+                if ts is None or _pd.isna(ts) or int(ts.timestamp()) < earliest_ts:
+                    continue
+                filt_mkts.append(m)
+            if not filt_mkts:
+                continue
+            # Optional text filter across market and event fields
+            if text_term:
+                needle = text_term.lower().strip()
+                def m_has_term(m: Dict[str, Any]) -> bool:
+                    fields = [
+                        str(e.get("title", "")),
+                        str(m.get("title", "")),
+                        str(m.get("subtitle", "")),
+                        str(m.get("yes_sub_title", "")),
+                        str(m.get("no_sub_title", "")),
+                        str(m.get("ticker", "")),
+                        str(m.get("event_ticker", "")),
+                        str(m.get("series_ticker", "")),
+                    ]
+                    return needle in " ".join(fields).lower()
+                filt_mkts = [m for m in filt_mkts if m_has_term(m)]
+                if not filt_mkts:
+                    continue
+            results.append({**e, "markets": filt_mkts})
+        # Deduplicate events
+        by_evt: Dict[str, Dict[str, Any]] = {}
+        for e in results:
             t = e.get("event_ticker")
             if t and t not in by_evt:
                 by_evt[t] = e

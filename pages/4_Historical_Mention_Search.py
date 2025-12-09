@@ -67,7 +67,14 @@ def _group_by_event(markets: List[dict]) -> List[dict]:
 @st.cache_data(show_spinner=False, ttl=300)
 def _fetch_history(term: str, months: int, include_closed: bool) -> List[dict]:
     client = KalshiClient()
-    return client.list_mention_markets_historical(text_term=term, months=months, include_closed=include_closed)
+    # Use events-based not-active fetch for broader recall, then flatten to markets
+    evs = client.list_mention_events_not_active(text_term=term, months=months, include_closed=include_closed)
+    markets: List[dict] = []
+    for e in evs:
+        for m in e.get("markets") or []:
+            if isinstance(m, dict):
+                markets.append(m)
+    return markets
 
 @st.cache_data(show_spinner=False, ttl=180)
 def _fetch_recent_closed(limit: int = 12) -> List[dict]:
@@ -289,6 +296,13 @@ def main() -> None:
                 df["End"] = df["End"].dt.strftime("%b %d, %Y %H:%M UTC")
             cols = [c for c in ["Word", "Final volume", "Result", "Said?", "End", "Ticker"] if c in df.columns]
             st.dataframe(df[cols], width="stretch", hide_index=True)
+            # Raw fields for this group (pull all data for each ticker)
+            with st.expander("Raw fields (selected event tickers)"):
+                try:
+                    raw_df = pd.json_normalize(selected_group_in_row["items"])
+                    st.dataframe(raw_df, hide_index=True, use_container_width=True)
+                except Exception:
+                    st.write(selected_group_in_row["items"])
 
 
 if __name__ == "__main__":
