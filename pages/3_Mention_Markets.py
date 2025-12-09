@@ -81,17 +81,18 @@ def _derive_description(m: dict) -> str:
 
 
 def _group_by_title(markets: list[dict]) -> list[dict]:
-    by_title: dict[str, list[dict]] = {}
+    # Group by event (active events view)
+    by_event: dict[str, list[dict]] = {}
     for m in markets:
         if not isinstance(m, dict):
             continue
-        title = str(m.get("title", "")).strip()
-        if not title:
-            # If title missing, group by event_ticker as fallback
-            title = str(m.get("event_ticker") or m.get("ticker") or "Unknown").strip()
-        by_title.setdefault(title, []).append(m)
+        evt = str(m.get("event_ticker") or "").strip()
+        if not evt:
+            # Fallback to grouping by market title if event_ticker is missing
+            evt = str(m.get("title") or m.get("ticker") or "Unknown").strip()
+        by_event.setdefault(evt, []).append(m)
     groups = []
-    for title, items in by_title.items():
+    for event_ticker, items in by_event.items():
         total_vol = sum(int(m.get("volume") or 0) for m in items if isinstance(m, dict))
         # Use the latest close_time among strikes
         end_times = [m.get("close_time") or m.get("end_date") or m.get("expiry_time") for m in items if isinstance(m, dict)]
@@ -102,16 +103,18 @@ def _group_by_title(markets: list[dict]) -> list[dict]:
             parsed = pd.to_datetime([e for e in end_times if e], utc=True, errors="coerce")
             parsed = [p for p in parsed if not pd.isna(p)]
             if parsed:
-                # Latest end used for display; we will also store earliest for sorting
                 end_latest = max(parsed)
                 end_soonest = min(parsed)
                 end_iso = end_latest.isoformat()
                 end_ts_epoch = int(end_soonest.timestamp())
         except Exception:
             end_iso = None
+        # Derive a display title from the first market title, fallback to event_ticker
+        disp_title = str((items[0] or {}).get("title") or event_ticker or "Event").strip()
         groups.append(
             {
-                "title": title,
+                "event_ticker": event_ticker,
+                "display_title": disp_title,
                 "num_strikes": len(items),
                 "total_volume": total_vol,
                 "end_date": _safe_parse_dt(end_iso or (end_times[0] if end_times else "")),
@@ -213,7 +216,7 @@ def main() -> None:
                 st.error(f"Active markets sample error: {e}")
 
         if markets:
-            # Cache the grouped structure by a stable JSON key for speed on reruns
+            # Cache the grouped (by event) structure by a stable JSON key for speed on reruns
             markets_key = hashlib.md5(json.dumps(markets, sort_keys=True).encode("utf-8")).hexdigest()
             # Reuse groups from session if payload hasn't changed to make card clicks instantaneous
             if (
@@ -225,7 +228,7 @@ def main() -> None:
                 groups = _prepare_groups_cached(markets_key, markets)
                 st.session_state["mm_groups_key"] = markets_key
                 st.session_state["mm_groups"] = groups
-                st.session_state["mm_group_map"] = {g["title"]: g for g in groups}
+                st.session_state["mm_group_map"] = {g.get("event_ticker") or g.get("display_title"): g for g in groups}
 
             # Preload tags for all first tickers (single DB roundtrip, cached in session for 5 minutes)
             tickers_for_tags: list[str] = [g["items"][0].get("ticker") for g in groups if g.get("items")]
@@ -246,12 +249,12 @@ def main() -> None:
                     st.session_state["mm_tags_map"] = {}
                     st.session_state["mm_tags_loaded_at_ms"] = now_ms
 
-            # Top summary bar
-            total_markets = len(groups)
+            # Top summary bar (events)
+            total_markets = len(groups)  # number of events
             total_volume = sum(int(g["total_volume"]) for g in groups)
             s1, s2 = st.columns(2)
             with s1:
-                st.metric("Total markets", total_markets)
+                st.metric("Total events", total_markets)
             with s2:
                 st.metric("Total volume", f"{total_volume:,}")
 
@@ -285,7 +288,7 @@ def main() -> None:
                         st.markdown(
                             f"""
                             <div style="background:{bg};border:1px solid {border};border-radius:10px;padding:12px;margin-bottom:6px;">
-                              <div style="font-weight:600;margin-bottom:6px;">{g['title']}</div>
+                              <div style="font-weight:600;margin-bottom:6px;">{g.get('display_title') or g.get('event_ticker')}</div>
                               <div style="display:flex;gap:16px;font-size:12px;color:#555;">
                                 <div>Strikes: <b>{g['num_strikes']}</b></div>
                                 <div>Volume: <b>{int(g['total_volume']):,}</b></div>
@@ -299,11 +302,11 @@ def main() -> None:
                         # Controls row: [View Strikes] [Add tag] [tag input]
                         # Stable group key based on first ticker (fallback to index + title)
                         first_ticker = g["items"][0].get("ticker") if g["items"] else ""
-                        group_key = (first_ticker or f"{i}_{abs(hash(g['title']))}").replace(" ", "_")
+                        group_key = (first_ticker or g.get("event_ticker") or f"{i}_{abs(hash(g.get('display_title', '')))}").replace(" ", "_")
                         ctrl_cols = st.columns([1, 1, 3])
                         with ctrl_cols[0]:
                             if st.button("View strikes", key=f"view_{group_key}"):
-                                st.session_state["mm_selected_title"] = g["title"]
+                                st.session_state["mm_selected_event"] = g.get("event_ticker") or g.get("display_title")
                                 st.session_state["mm_scrolled"] = False
                                 st.rerun()
                         with ctrl_cols[1]:
@@ -343,7 +346,8 @@ def main() -> None:
                             st.caption("Tags: " + ", ".join(sorted(existing_tags)))
 
                         # Mark if this group is selected; table will render full width below the row
-                        if st.session_state.get("mm_selected_title") == g["title"]:
+                        sel_key = st.session_state.get("mm_selected_event")
+                        if sel_key and sel_key == (g.get("event_ticker") or g.get("display_title")):
                             selected_group_in_row = g
 
                 # Full-width strikes table for the selected card in this row

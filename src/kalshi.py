@@ -26,11 +26,29 @@ class KalshiHistoryMixin:
         import pandas as _pd
 
         earliest_ts = int((_pd.Timestamp.utcnow() - _pd.Timedelta(days=30 * max(months, 1))).timestamp())
-        # Fetch without status filter to avoid API differences; filter locally for historical statuses
-        all_hist = self.list_markets_paginated(status_filter=None, per_page=500, max_pages=20, earliest_close_ts=earliest_ts)
-        wanted_status = {"closed", "settled", "determined"}
-        all_hist = [m for m in all_hist if str(m.get("status", "")).lower() in wanted_status]
-        mention_like = _filter_mention_like(all_hist)
+        # Explicitly fetch each historical status to ensure the API returns past markets
+        statuses = ["closed", "settled", "determined"]
+        combined: List[Dict[str, Any]] = []
+        for s in statuses:
+            try:
+                items = self.list_markets_paginated(
+                    status_filter=s,
+                    per_page=500,
+                    max_pages=20,
+                    earliest_close_ts=earliest_ts,
+                )
+                if items:
+                    combined.extend(items)
+            except Exception:
+                # Continue with other statuses even if one fails
+                continue
+        # Fallback: if nothing came back (API quirk), try without a status and filter locally
+        if not combined:
+            combined = self.list_markets_paginated(
+                status_filter=None, per_page=500, max_pages=20, earliest_close_ts=earliest_ts
+            )
+            combined = [m for m in combined if str(m.get("status", "")).lower() in set(statuses)]
+        mention_like = _filter_mention_like(combined)
         if text_term:
             mention_like = [m for m in mention_like if _contains_term(m, text_term)]
         by_ticker: Dict[str, Dict[str, Any]] = {}

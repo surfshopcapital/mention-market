@@ -31,13 +31,16 @@ def _derive_description(m: dict) -> str:
     return ""
 
 
-def _group_by_title(markets: List[dict]) -> List[dict]:
-    by_title: Dict[str, List[dict]] = {}
+def _group_by_event(markets: List[dict]) -> List[dict]:
+    # Group closed/settled/determined by event
+    by_event: Dict[str, List[dict]] = {}
     for m in markets:
-        title = str(m.get("title", "")).strip() or str(m.get("event_ticker") or m.get("ticker") or "Unknown")
-        by_title.setdefault(title, []).append(m)
+        event_ticker = str(m.get("event_ticker") or "").strip()
+        if not event_ticker:
+            event_ticker = str(m.get("title") or m.get("ticker") or "Unknown")
+        by_event.setdefault(event_ticker, []).append(m)
     groups: List[dict] = []
-    for title, items in by_title.items():
+    for event_ticker, items in by_event.items():
         vol = sum(int(m.get("volume") or 0) for m in items)
         all_times = [
             m.get("close_time") or m.get("end_date") or m.get("expiry_time") or m.get("latest_expiration_time")
@@ -45,9 +48,11 @@ def _group_by_title(markets: List[dict]) -> List[dict]:
         ]
         parsed = [t for t in (_safe_parse_dt(x) for x in all_times) if t is not None]
         last_ts = max(parsed) if parsed else None
+        disp_title = str((items[0] or {}).get("title") or event_ticker or "Event").strip()
         groups.append(
             {
-                "title": title,
+                "event_ticker": event_ticker,
+                "display_title": disp_title,
                 "items": items,
                 "total_volume": vol,
                 "last_ts": last_ts,
@@ -96,7 +101,7 @@ def main() -> None:
         except Exception as e:
             st.error(f"Failed to fetch history: {e}")
             return
-    groups = _group_by_title(data)
+    groups = _group_by_event(data)
 
     # Bulk tag fetch for first tickers of each group
     tickers = [g["items"][0].get("ticker") for g in groups if g.get("items")]
@@ -117,13 +122,13 @@ def main() -> None:
         groups = [g for g in groups if group_has_tag(g)]
 
     # Summary bar
-    num_markets = len(groups)
+    num_markets = len(groups)  # events count
     total_volume = sum(int(g["total_volume"]) for g in groups)
     last_dates = [g["last_ts"] for g in groups if g["last_ts"] is not None]
     last_date_str = max(last_dates).strftime("%b %d, %Y %H:%M UTC") if last_dates else "—"
     s1, s2, s3 = st.columns(3)
     with s1:
-        st.metric("Markets", num_markets)
+        st.metric("Events", num_markets)
     with s2:
         st.metric("Total volume", f"{total_volume:,}")
     with s3:
@@ -143,22 +148,23 @@ def main() -> None:
                 st.markdown(
                     f"""
                     <div style="background:#f8f9fa;border:1px solid #e0e0e0;border-radius:10px;padding:10px;margin-bottom:6px;">
-                      <div style="font-weight:600;margin-bottom:6px;line-height:1.2">{g['title']}</div>
+                      <div style="font-weight:600;margin-bottom:6px;line-height:1.2">{g.get('display_title') or g.get('event_ticker')}</div>
                       <div style="font-size:12px;color:#555;">Final volume: <b>{int(g['total_volume']):,}</b></div>
                     </div>
                     """,
                     unsafe_allow_html=True,
                 )
                 first_ticker = g["items"][0].get("ticker") if g["items"] else ""
-                group_key = (first_ticker or f"{i}_{abs(hash(g['title']))}").replace(" ", "_")
+                group_key = (first_ticker or g.get("event_ticker") or f"{i}_{abs(hash(g.get('display_title', '')))}").replace(" ", "_")
                 if st.button("View", key=f"hist_view_{group_key}"):
-                    st.session_state["hist_selected_title"] = g["title"]
+                    st.session_state["hist_selected_event"] = g.get("event_ticker") or g.get("display_title")
                     st.rerun()
                 # Show tags
                 existing_tags = tags_map.get(str(first_ticker), [])
                 if existing_tags:
                     st.caption("Tags: " + ", ".join(sorted(existing_tags)))
-                if st.session_state.get("hist_selected_title") == g["title"]:
+                sel = st.session_state.get("hist_selected_event")
+                if sel and sel == (g.get("event_ticker") or g.get("display_title")):
                     selected_group_in_row = g
 
         if selected_group_in_row:
