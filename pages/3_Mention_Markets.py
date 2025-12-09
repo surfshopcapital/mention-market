@@ -11,6 +11,7 @@ from src.kalshi import KalshiClient
 from src.config import get_kalshi_api_base_url
 from src.db import get_session, init_db
 from src.storage import add_market_tags, get_market_tags, get_market_tags_bulk
+from src.ui_components import inject_dark_theme
 
 
 def _to_display_df(markets: list[dict]) -> pd.DataFrame:
@@ -150,6 +151,7 @@ def _prepare_groups_cached(events_json_key: str, events_payload: list[dict]) -> 
 
 def main() -> None:
     st.set_page_config(page_title="Mention Markets", page_icon="💬", layout="wide")
+    inject_dark_theme()
     # Ensure DB schema (including market_tags) exists
     try:
         init_db()
@@ -163,7 +165,7 @@ def main() -> None:
         st.subheader("Refresh")
         refresh_sec = st.slider("Auto-refresh interval (seconds)", min_value=0, max_value=600, value=300, step=30)
         _ = st.caption("Set to 0 to disable auto-refresh.")
-        manual = st.button("Refresh now", type="primary", use_container_width=True)
+        manual = st.button("Refresh now", type="primary")
         debug_mode = st.checkbox("Show debug", value=False)
 
     # Build a cache key that updates when user refreshes or interval elapses

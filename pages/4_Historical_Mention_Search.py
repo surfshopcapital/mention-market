@@ -9,6 +9,7 @@ from collections import Counter, defaultdict
 from src.kalshi import KalshiClient
 from src.db import get_session, init_db
 from src.storage import get_market_tags_bulk
+from src.ui_components import inject_dark_theme
 
 
 def _safe_parse_dt(value: object) -> pd.Timestamp | None:
@@ -77,13 +78,14 @@ def _fetch_history(term: str, months: int, include_closed: bool) -> List[dict]:
     return markets
 
 @st.cache_data(show_spinner=False, ttl=180)
-def _fetch_recent_closed(limit: int = 12) -> List[dict]:
+def _fetch_recent_closed_events(limit: int = 12) -> List[dict]:
     client = KalshiClient()
-    return client.list_mention_markets_closed_recent(limit=limit)
+    return client.list_mention_events_closed_recent(limit=limit)
 
 
 def main() -> None:
     st.set_page_config(page_title="Historical Mention Search", page_icon="🕰️", layout="wide")
+    inject_dark_theme()
     try:
         init_db()
     except Exception:
@@ -99,7 +101,7 @@ def main() -> None:
         tag_q = st.text_input("Filter by tag (optional)", value="", placeholder="e.g., earnings")
     top_controls = st.columns([1, 2])
     with top_controls[0]:
-        manual = st.button("Search / Refresh", type="primary", use_container_width=True)
+        manual = st.button("Search / Refresh", type="primary")
     with top_controls[1]:
         months = st.selectbox("Lookback (months)", options=[3, 6, 12], index=2)
     debug_mode = st.checkbox("Show debug", value=False)
@@ -107,45 +109,53 @@ def main() -> None:
 
     # Default: If no query or tag, show recent closed mention markets (cards; 6 per row)
     if not (q.strip() or tag_q.strip()):
-        st.subheader("Recent closed mention markets")
+        st.subheader("Recent closed mention events")
         try:
-            recent = _fetch_recent_closed(limit=12)
+            recent_events = _fetch_recent_closed_events(limit=12)
         except Exception as e:
             st.error(f"Failed to fetch recent closed: {e}")
             return
         if debug_mode:
-            with st.expander("Debug: Recent-closed mention markets"):
-                st.write({"count": len(recent)})
-                if recent:
-                    sample_cols = ["ticker", "event_ticker", "series_ticker", "title", "status", "close_time", "result"]
-                    st.dataframe(pd.DataFrame([{k: m.get(k) for k in sample_cols} for m in recent[:12]]), hide_index=True, use_container_width=True)
-        if not recent:
-            st.info("No recent closed mention markets found.")
+            with st.expander("Debug: Recent-closed mention events"):
+                st.write({"events_count": len(recent_events)})
+                if recent_events:
+                    # summarize per event
+                    def summarize_event(e: dict) -> dict:
+                        mkts = [m for m in (e.get("markets") or []) if isinstance(m, dict)]
+                        return {
+                            "event_ticker": e.get("event_ticker"),
+                            "title": e.get("title"),
+                            "series_ticker": e.get("series_ticker"),
+                            "num_markets": len(mkts),
+                            "statuses": dict(pd.Series([str(m.get("status","")).lower() for m in mkts]).value_counts()),
+                        }
+                    st.dataframe(pd.DataFrame([summarize_event(e) for e in recent_events]), hide_index=True, width="stretch")
+        if not recent_events:
+            st.info("No recent closed mention events found.")
             return
         # Cards 6 per row
         cols_per_row = 6
-        for i in range(0, len(recent), cols_per_row):
-            row = recent[i : i + cols_per_row]
+        for i in range(0, len(recent_events), cols_per_row):
+            row = recent_events[i : i + cols_per_row]
             cols = st.columns(len(row))
-            for c, m in zip(cols, row):
+            for c, e in zip(cols, row):
                 with c:
-                    end_ts = _safe_parse_dt(m.get("close_time") or m.get("end_date") or m.get("expiry_time") or m.get("latest_expiration_time"))
-                    end_disp = end_ts.strftime("%b %d, %Y %H:%M UTC") if end_ts is not None else "—"
-                    said = ""
-                    res = (m.get("result") or "").strip()
-                    res_disp = res.upper() if res else ""
-                    if res_disp == "YES":
-                        said = "Said"
-                    elif res_disp == "NO":
-                        said = "Not said"
+                    mkts = [m for m in (e.get("markets") or []) if isinstance(m, dict)]
+                    # derive latest end across markets
+                    end_disp = "—"
+                    if mkts:
+                        end_ts = max([_safe_parse_dt(m.get("close_time") or m.get("end_date") or m.get("expiry_time") or m.get("latest_expiration_time")) for m in mkts if _safe_parse_dt(m.get("close_time") or m.get("end_date") or m.get("expiry_time") or m.get("latest_expiration_time")) is not None] or [])
+                        if end_ts is not None:
+                            end_disp = end_ts.strftime("%b %d, %Y %H:%M UTC")
+                    statuses = dict(pd.Series([str(m.get("status","")).lower() for m in mkts]).value_counts()) if mkts else {}
                     st.markdown(
                         f"""
                         <div style="background:#fff;border:1px solid #e0e0e0;border-radius:10px;padding:10px;margin-bottom:6px;">
-                          <div style="font-weight:600;margin-bottom:6px;line-height:1.2">{str(m.get("title") or m.get("ticker") or "")}</div>
+                          <div style="font-weight:600;margin-bottom:6px;line-height:1.2">{str(e.get("title") or e.get("event_ticker") or "")}</div>
                           <div style="font-size:12px;color:#555;line-height:1.4">
-                            <div>Word: <b>{_derive_description(m)}</b></div>
-                            <div>Status: <b>{str(m.get("status") or "").lower()}</b></div>
-                            <div>Result: <b>{res_disp or "—"}</b> {("("+said+")") if said else ""}</div>
+                            <div>Event: <b>{e.get("event_ticker")}</b></div>
+                            <div>Markets: <b>{len(mkts)}</b></div>
+                            <div>Statuses: <b>{statuses}</b></div>
                             <div>End: <b>{end_disp}</b></div>
                           </div>
                         </div>
@@ -200,7 +210,7 @@ def main() -> None:
                 for m in hist_dicts[:10]:
                     sample_rows.append({k: m.get(k) for k in sample_cols})
                 st.caption("Sample historical markets (first 10)")
-                st.dataframe(pd.DataFrame(sample_rows), hide_index=True, use_container_width=True)
+                st.dataframe(pd.DataFrame(sample_rows), hide_index=True, width="stretch")
 
     # Bulk tag fetch for first tickers of each group
     tickers = [g["items"][0].get("ticker") for g in groups if g.get("items")]
@@ -300,7 +310,7 @@ def main() -> None:
             with st.expander("Raw fields (selected event tickers)"):
                 try:
                     raw_df = pd.json_normalize(selected_group_in_row["items"])
-                    st.dataframe(raw_df, hide_index=True, use_container_width=True)
+                    st.dataframe(raw_df, hide_index=True, width="stretch")
                 except Exception:
                     st.write(selected_group_in_row["items"])
 

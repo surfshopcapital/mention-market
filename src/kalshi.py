@@ -235,7 +235,7 @@ class KalshiClient(KalshiHistoryMixin):
         self,
         *,
         series_ticker: Optional[str] = None,
-        per_page: int = 200,
+        per_page: int = 100,
         max_pages: int = 50,
         with_nested_markets: bool = True,
         earliest_close_ts: Optional[int] = None,
@@ -254,18 +254,6 @@ class KalshiClient(KalshiHistoryMixin):
                 break
             all_events.extend(evs)
             cursor = data.get("cursor")
-            if earliest_close_ts is not None:
-                import pandas as _pd
-                # Find oldest close time among nested markets in this page
-                page_oldest: List[int] = []
-                for e in evs:
-                    for m in (e.get("markets") or []):
-                        t = m.get("close_time") or m.get("end_date") or m.get("expiry_time") or m.get("latest_expiration_time")
-                        ts = _pd.to_datetime(t, utc=True, errors="coerce")
-                        if ts is not None and not _pd.isna(ts):
-                            page_oldest.append(int(ts.timestamp()))
-                if page_oldest and min(page_oldest) < int(earliest_close_ts):
-                    break
             if not cursor:
                 break
         return all_events
@@ -509,7 +497,8 @@ class KalshiClient(KalshiHistoryMixin):
         """
         import pandas as _pd
         earliest_ts = int((_pd.Timestamp.utcnow() - _pd.Timedelta(days=30 * max(months, 1))).timestamp())
-        events = self.list_events_paginated(per_page=200, max_pages=50, with_nested_markets=True, earliest_close_ts=earliest_ts)
+        # Page through events broadly; we'll filter by time below
+        events = self.list_events_paginated(per_page=100, max_pages=50, with_nested_markets=True, earliest_close_ts=None)
         results: List[Dict[str, Any]] = []
         for e in events:
             if not isinstance(e, dict):
@@ -577,6 +566,63 @@ class KalshiClient(KalshiHistoryMixin):
             if t and t not in by_evt:
                 by_evt[t] = e
         return list(by_evt.values())
+
+    def list_mention_events_closed_recent(self, *, limit: int = 12) -> List[Dict[str, Any]]:
+        """
+        Most recent mention-like events that have at least one market in statuses
+        {'closed','settled','determined'}. Returns events with nested markets preserved.
+        """
+        import pandas as _pd
+        events = self.list_events_paginated(per_page=100, max_pages=50, with_nested_markets=True, earliest_close_ts=None)
+        allowed = {"closed", "settled", "determined"}
+        shortlisted: List[Dict[str, Any]] = []
+        for e in events:
+            if not isinstance(e, dict):
+                continue
+            title = str(e.get("title", "")).lower()
+            series_ticker = str(e.get("series_ticker", "")).lower()
+            ev_ticker = str(e.get("event_ticker", "")).lower()
+            is_mention = (
+                "mention" in title
+                or " say " in f" {title} "
+                or "mention" in series_ticker
+                or "say" in series_ticker
+                or "mention" in ev_ticker
+                or "say" in ev_ticker
+            )
+            mkts = [m for m in (e.get("markets") or []) if isinstance(m, dict)]
+            if not is_mention:
+                for m in mkts:
+                    cat = str(m.get("category", "")).lower()
+                    mtitle = str(m.get("title", "")).lower()
+                    mtick = str(m.get("ticker", "")).lower()
+                    if cat == "mentions" or "mention" in mtitle or " say " in f" {mtitle} " or "mention" in mtick or "say" in mtick:
+                        is_mention = True
+                        break
+            if not is_mention:
+                continue
+            # Keep only markets with allowed statuses
+            filtered = [m for m in mkts if str(m.get("status", "")).lower() in allowed]
+            if not filtered:
+                continue
+            # Compute most recent end among filtered markets
+            ts_list: List[int] = []
+            for m in filtered:
+                t = m.get("close_time") or m.get("end_date") or m.get("expiry_time") or m.get("latest_expiration_time")
+                ts = _pd.to_datetime(t, utc=True, errors="coerce")
+                if ts is not None and not _pd.isna(ts):
+                    ts_list.append(int(ts.timestamp()))
+            if not ts_list:
+                continue
+            shortlisted.append({**e, "markets": filtered, "_latest_ts": max(ts_list)})
+        shortlisted.sort(key=lambda e: int(e.get("_latest_ts") or 0), reverse=True)
+        # Drop helper field and cap
+        out: List[Dict[str, Any]] = []
+        for e in shortlisted[: max(0, int(limit))]:
+            e2 = dict(e)
+            e2.pop("_latest_ts", None)
+            out.append(e2)
+        return out
 
 
 def _filter_mention_like(markets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

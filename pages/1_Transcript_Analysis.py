@@ -22,6 +22,7 @@ from src.ui_components import (
     render_library_selector,
     render_transcript_weights,
     render_transcript_mapping_table,
+    inject_dark_theme,
 )
 
 
@@ -59,6 +60,7 @@ def _save_uploaded_files(files: Sequence[object]) -> list[int]:
 
 def main() -> None:
     st.set_page_config(page_title="Transcript Analysis", page_icon="🔍", layout="wide")
+    inject_dark_theme()
     init_db()
 
     st.title("Transcript Analysis")
@@ -139,7 +141,7 @@ def main() -> None:
         render_transcript_mapping_table(selected_transcripts, index_by_id)
 
         df: pd.DataFrame = result["keywords_df"]
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width="stretch", hide_index=True)
 
         st.caption("Tip: Download as CSV from the dataframe menu for later analysis.")
 

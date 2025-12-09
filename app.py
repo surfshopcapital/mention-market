@@ -2,6 +2,7 @@ import streamlit as st
 
 from src.config import get_default_words_per_minute
 from src.db import init_db
+from src.ui_components import inject_dark_theme
 
 
 def _init_app_state() -> None:
@@ -11,6 +12,7 @@ def _init_app_state() -> None:
 
 def main() -> None:
     st.set_page_config(page_title="Kalshi Mention Markets – Transcript Toolkit", page_icon="📈", layout="wide")
+    inject_dark_theme()
     _init_app_state()
     # Ensure DB schema exists (safe to call multiple times)
     init_db()

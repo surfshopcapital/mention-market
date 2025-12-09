@@ -13,7 +13,7 @@ from src.storage import (
     update_transcript_title,
 )
 from src.text_processing import extract_text, normalize_text_for_counting, tokenize_words
-from src.ui_components import render_library_selector, render_tag_editor
+from src.ui_components import render_library_selector, render_tag_editor, inject_dark_theme
 
 
 def _save_uploaded_files(files: list[object]) -> list[int]:
@@ -63,11 +63,12 @@ def _render_library_table(transcripts: List[Transcript]) -> None:
             for t in transcripts
         ]
     )
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.dataframe(df, width="stretch", hide_index=True)
 
 
 def main() -> None:
     st.set_page_config(page_title="Transcript Library", page_icon="📚", layout="wide")
+    inject_dark_theme()
     init_db()
 
     st.title("Transcript Library")

@@ -8,6 +8,57 @@ import streamlit as st
 from .models import Transcript
 
 
+def inject_dark_theme() -> None:
+    """
+    Inject a modern dark theme using CSS variables and light utility styles.
+    Safe to call multiple times; does nothing after first injection per run.
+    """
+    key = "_dark_theme_injected"
+    if not st.session_state.get(key):
+        st.markdown(
+            """
+            <style>
+              :root {
+                --mm-bg: #0f172a;            /* slate-900 */
+                --mm-panel: #111827;         /* gray-900 */
+                --mm-panel-2: #0b1220;       /* deeper bg */
+                --mm-text: #e5e7eb;          /* gray-200 */
+                --mm-subtext: #9ca3af;       /* gray-400 */
+                --mm-accent: #22d3ee;        /* cyan-400 */
+                --mm-accent-2: #60a5fa;      /* blue-400 */
+                --mm-border: #1f2937;        /* gray-800 */
+                --mm-green: #34d399;         /* emerald-400 */
+                --mm-red: #f87171;           /* red-400 */
+                --mm-yellow: #fbbf24;        /* amber-400 */
+                --mm-radius: 12px;
+              }
+              /* App background and base text */
+              .stApp, .stApp header, .stApp footer { background: var(--mm-bg) !important; color: var(--mm-text) !important; }
+              /* Cards / containers */
+              .stMarkdown, .stDataFrame, .stTable, .stSelectbox, .stTextInput, .stTextArea, .stMultiSelect, .stNumberInput {
+                color: var(--mm-text) !important;
+              }
+              /* Make expander panels look like cards */
+              .streamlit-expanderHeader { background: var(--mm-panel) !important; color: var(--mm-text) !important; border-radius: var(--mm-radius) !important; }
+              .streamlit-expanderContent { background: var(--mm-panel-2) !important; border: 1px solid var(--mm-border) !important; border-top: none !important; border-radius: 0 0 var(--mm-radius) var(--mm-radius) !important; }
+              /* Buttons */
+              .stButton>button[kind="primary"] { background: linear-gradient(90deg, var(--mm-accent), var(--mm-accent-2)); color: #0b1020; border: none; border-radius: 10px; font-weight: 600; }
+              .stButton>button[kind="secondary"] { background: transparent; border: 1px solid var(--mm-border); color: var(--mm-text); border-radius: 10px; }
+              .stButton>button:hover { filter: brightness(1.05); }
+              /* Metrics */
+              [data-testid="stMetricValue"] { color: var(--mm-accent) !important; }
+              /* Tables/Dataframes */
+              div[data-testid="stDataFrame"] { background: var(--mm-panel); border: 1px solid var(--mm-border); border-radius: var(--mm-radius); }
+              /* Inputs */
+              .stTextInput input, .stTextArea textarea, .stSelectbox select, .stMultiSelect div, .stNumberInput input {
+                background: #0c1324 !important; color: var(--mm-text) !important; border: 1px solid var(--mm-border) !important; border-radius: 10px !important;
+              }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.session_state[key] = True
+
 def render_keyword_input(*, key: str) -> List[str]:
     cols = st.columns([1, 1])
     with cols[0]:
@@ -74,7 +125,7 @@ def render_transcript_mapping_table(transcripts: Sequence[Transcript], index_by_
             for t in transcripts
         ]
     ).sort_values(by="#")
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.dataframe(df, width="stretch", hide_index=True)
 
 
 def render_transcript_weights(transcripts: Sequence[Transcript], *, key: str) -> Dict[int, float]:
