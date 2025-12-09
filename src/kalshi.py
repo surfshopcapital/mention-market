@@ -259,6 +259,9 @@ class KalshiClient(KalshiHistoryMixin):
         limit: int = 200,
         cursor: Optional[str] = None,
         with_nested_markets: bool = False,
+        status_filter: Optional[str] = None,
+        min_close_ts: Optional[int] = None,
+        max_close_ts: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Fetch events. When with_nested_markets is True, response includes 'markets' array per event.
@@ -270,6 +273,13 @@ class KalshiClient(KalshiHistoryMixin):
             params["cursor"] = cursor
         if with_nested_markets:
             params["with_nested_markets"] = "true"
+        if status_filter:
+            # Expected values per docs: 'open', 'closed', 'settled', 'determined'
+            params["status"] = status_filter
+        if min_close_ts is not None:
+            params["min_close_ts"] = int(min_close_ts)
+        if max_close_ts is not None:
+            params["max_close_ts"] = int(max_close_ts)
         status, data = self._request("GET", "/trade-api/v2/events", params=params)
         if status != 200:
             raise RuntimeError(f"Kalshi events request failed: {status} {data}")
@@ -282,17 +292,25 @@ class KalshiClient(KalshiHistoryMixin):
         per_page: int = 100,
         max_pages: int = 50,
         with_nested_markets: bool = True,
-        earliest_close_ts: Optional[int] = None,
+        status_filter: Optional[str] = None,
+        min_close_ts: Optional[int] = None,
+        max_close_ts: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """
         Paginate through events; optionally include nested markets.
-        If earliest_close_ts is provided, stops when an event contains any market
-        with close time older than that threshold.
         """
         all_events: List[Dict[str, Any]] = []
         cursor: Optional[str] = None
         for _ in range(max_pages):
-            data = self.list_events(series_ticker=series_ticker, limit=per_page, cursor=cursor, with_nested_markets=with_nested_markets)
+            data = self.list_events(
+                series_ticker=series_ticker,
+                limit=per_page,
+                cursor=cursor,
+                with_nested_markets=with_nested_markets,
+                status_filter=status_filter,
+                min_close_ts=min_close_ts,
+                max_close_ts=max_close_ts,
+            )
             evs = data.get("events", []) or data.get("data", []) or []
             if not evs:
                 break
@@ -730,6 +748,71 @@ class KalshiClient(KalshiHistoryMixin):
             e2.pop("_latest_ts", None)
             out.append(e2)
         return out
+
+    def list_mention_events_window_events_api(
+        self,
+        *,
+        months: int = 12,
+        statuses: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Use Events API to fetch mention-like events within a time window, filtering events
+        by status at the event level. Markets are kept as-is (no status filtering).
+        """
+        import pandas as _pd
+        earliest_ts = int((_pd.Timestamp.utcnow() - _pd.Timedelta(days=30 * max(months, 1))).timestamp())
+        latest_ts = int(_pd.Timestamp.utcnow().timestamp())
+        if not statuses:
+            statuses = ["closed", "settled", "determined"]
+        collected: List[Dict[str, Any]] = []
+        for s in statuses:
+            try:
+                evs = self.list_events_paginated(
+                    per_page=100,
+                    max_pages=100,
+                    with_nested_markets=True,
+                    status_filter=s,
+                    min_close_ts=earliest_ts,
+                    max_close_ts=latest_ts,
+                )
+                if evs:
+                    collected.extend(evs)
+            except Exception:
+                continue
+        # Filter to mention-like using event-level fields OR nested markets
+        filtered: List[Dict[str, Any]] = []
+        for e in collected:
+            if not isinstance(e, dict):
+                continue
+            title = str(e.get("title", "")).lower()
+            series_ticker = str(e.get("series_ticker", "")).lower()
+            ev_ticker = str(e.get("event_ticker", "")).lower()
+            mkts = [m for m in (e.get("markets") or []) if isinstance(m, dict)]
+            is_mention = (
+                "mention" in title
+                or " say " in f" {title} "
+                or "mention" in series_ticker
+                or "say" in series_ticker
+                or "mention" in ev_ticker
+                or "say" in ev_ticker
+            )
+            if not is_mention:
+                for m in mkts:
+                    cat = str(m.get("category", "")).lower()
+                    mtitle = str(m.get("title", "")).lower()
+                    mtick = str(m.get("ticker", "")).lower()
+                    if cat == "mentions" or "mention" in mtitle or " say " in f" {mtitle} " or "mention" in mtick or "say" in mtick:
+                        is_mention = True
+                        break
+            if is_mention:
+                filtered.append(e)
+        # Deduplicate by event_ticker
+        by_evt: Dict[str, Dict[str, Any]] = {}
+        for e in filtered:
+            t = e.get("event_ticker")
+            if t and t not in by_evt:
+                by_evt[t] = e
+        return list(by_evt.values())
 
 
 def _filter_mention_like(markets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

@@ -68,30 +68,17 @@ def _group_by_event(markets: List[dict]) -> List[dict]:
 @st.cache_data(show_spinner=False, ttl=1200)
 def _bootstrap_events(months: int, cache_key: str) -> List[dict]:
     """
-    Preload mention-like events within window by querying markets with min/max_close_ts,
-    then grouping into events. Uses closed/settled/determined statuses to reduce size.
+    Preload mention-like events within window using Events API with event-level status filters.
     cache_key lets us force refresh when the user clicks Search/Refresh.
     """
     client = KalshiClient()
-    # Load markets in window and group by event
-    mkts = client.list_mention_markets_window(months=months, statuses=["closed", "settled", "determined"])
-    by_event: Dict[str, List[dict]] = {}
-    for m in mkts:
-        ev = str(m.get("event_ticker") or "") or str(m.get("title") or "")
-        by_event.setdefault(ev, []).append(m)
-    events: List[dict] = []
-    for ev_ticker, items in by_event.items():
-        # choose a display title from first market title
-        disp_title = str((items[0] or {}).get("title") or ev_ticker or "Event")
-        events.append({"event_ticker": ev_ticker, "title": disp_title, "markets": items})
-    return events
+    return client.list_mention_events_window_events_api(months=months, statuses=["closed", "settled", "determined"])
 
 @st.cache_data(show_spinner=False, ttl=300)
 def _fetch_history(term: str, months: int, include_closed: bool, cache_key: str) -> List[dict]:
-    # Filter within preloaded events; then flatten to markets
+    # Filter within preloaded events; then flatten to markets (no additional market-status filtering)
     all_events = _bootstrap_events(months, cache_key)
     needle = (term or "").strip().lower()
-    allowed = {"settled", "determined"} if not include_closed else {"closed", "settled", "determined"}
     markets: List[dict] = []
     for e in all_events:
         mkts = [m for m in (e.get("markets") or []) if isinstance(m, dict)]
@@ -113,8 +100,6 @@ def _fetch_history(term: str, months: int, include_closed: bool, cache_key: str)
                     if needle in mhay:
                         mkts2.append(m)
                 mkts = mkts2
-        # Filter allowed statuses
-        mkts = [m for m in mkts if str(m.get("status","")).lower() in allowed]
         markets.extend(mkts)
     return markets
 
