@@ -155,10 +155,10 @@ def main() -> None:
         cache_key = f"v1_force_{int(pd.Timestamp.utcnow().timestamp())}"
 
     if not (q.strip() or tag_q.strip()):
-        st.subheader("Recent closed mention events")
+        st.subheader("Recent closed mention events (last month)")
         try:
-            # Use preloaded events to derive recent closed (fewer API calls)
-            evs = _bootstrap_events(months, cache_key)
+            # Always use a 1-month window for recent events snapshot
+            evs = _bootstrap_events(1, cache_key)
             # Filter to allowed statuses and sort by latest end
             allowed = {"closed", "settled", "determined"}
             def to_latest_ts(e: dict) -> int:
@@ -185,7 +185,11 @@ def main() -> None:
             return
         if debug_mode:
             with st.expander("Debug: Recent-closed mention events"):
-                st.write({"events_count": len(recent_events)})
+                st.write({
+                    "events_bootstrap_window": 1,
+                    "events_total_bootstrap": len(evs),
+                    "events_after_status_filter": len(recent_events),
+                })
                 if recent_events:
                     # summarize per event
                     def summarize_event(e: dict) -> dict:
