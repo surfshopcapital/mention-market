@@ -175,8 +175,7 @@ def main() -> None:
     with top_controls[0]:
         manual = st.button("Search / Refresh", type="primary")
     with top_controls[1]:
-        months = st.selectbox("Lookback (months)", options=[3, 6, 12], index=2)
-    debug_mode = st.checkbox("Show debug", value=False)
+        months = st.selectbox("Lookback (months)", options=[3, 6, 12], index=0)
     include_closed = st.checkbox("Include closed (no final result yet)", value=False)
 
     # Default: If no query or tag, show recent closed mention markets (cards; 6 per row)
@@ -214,25 +213,6 @@ def main() -> None:
         except Exception as e:
             st.error(f"Failed to fetch recent closed: {e}")
             return
-        if debug_mode:
-            with st.expander("Debug: Recent-closed mention events"):
-                st.write({
-                    "events_bootstrap_window": 1,
-                    "events_total_bootstrap": len(evs),
-                    "events_after_status_filter": len(recent_events),
-                })
-                if recent_events:
-                    # summarize per event
-                    def summarize_event(e: dict) -> dict:
-                        mkts = [m for m in (e.get("markets") or []) if isinstance(m, dict)]
-                        return {
-                            "event_ticker": e.get("event_ticker"),
-                            "title": e.get("title"),
-                            "series_ticker": e.get("series_ticker"),
-                            "num_markets": len(mkts),
-                            "statuses": dict(pd.Series([str(m.get("status","")).lower() for m in mkts]).value_counts()),
-                        }
-                    st.dataframe(pd.DataFrame([summarize_event(e) for e in recent_events]), hide_index=True, width="stretch")
         if not recent_events:
             st.info("No recent closed mention events found.")
             return
@@ -246,14 +226,30 @@ def main() -> None:
                     mkts = [m for m in (e.get("markets") or []) if isinstance(m, dict)]
                     # derive latest end across markets
                     end_disp = "—"
+                    end_epoch = None
                     if mkts:
-                        end_ts = max([_safe_parse_dt(m.get("close_time") or m.get("end_date") or m.get("expiry_time") or m.get("latest_expiration_time")) for m in mkts if _safe_parse_dt(m.get("close_time") or m.get("end_date") or m.get("expiry_time") or m.get("latest_expiration_time")) is not None] or [])
+                        parsed = [ _safe_parse_dt(m.get("close_time") or m.get("end_date") or m.get("expiry_time") or m.get("latest_expiration_time")) for m in mkts ]
+                        parsed = [p for p in parsed if p is not None]
+                        end_ts = max(parsed) if parsed else None
                         if end_ts is not None:
                             end_disp = end_ts.strftime("%b %d, %Y %H:%M UTC")
+                            end_epoch = int(end_ts.timestamp())
                     statuses = dict(pd.Series([str(m.get("status","")).lower() for m in mkts]).value_counts()) if mkts else {}
+
+                    # palette: green (<1w), blue (<1m), red (older)
+                    import time as _t
+                    now = int(_t.time())
+                    day = 86400
+                    if end_epoch is not None and (now - end_epoch) < 7 * day:
+                        bg = "#e8f5e9"; border = "#43a047"  # green
+                    elif end_epoch is not None and (now - end_epoch) < 30 * day:
+                        bg = "#e3f2fd"; border = "#1e88e5"  # blue
+                    else:
+                        bg = "#ffebee"; border = "#e53935"  # red
+
                     st.markdown(
                         f"""
-                        <div style="background:#fff;border:1px solid #e0e0e0;border-radius:10px;padding:10px;margin-bottom:6px;">
+                        <div style="background:{bg};border:1px solid {border};border-radius:10px;padding:10px;margin-bottom:6px;">
                           <div style="font-weight:600;margin-bottom:6px;line-height:1.2;color:#000">{str(e.get("title") or e.get("event_ticker") or "")}</div>
                           <div style="font-size:12px;color:#000;line-height:1.4">
                             <div>Event: <b>{e.get("event_ticker")}</b></div>
@@ -312,50 +308,11 @@ def main() -> None:
             client = KalshiClient()
             fallback = client.list_mention_markets_historical(text_term=q.strip().lower(), months=int(months), include_closed=include_closed)
             hist_dicts = [m for m in fallback if isinstance(m, dict)]
-            if debug_mode:
-                st.info("Fallback: Using markets-based historical fetch due to empty events result.")
+            # Informational note removed (debug disabled by default)
         except Exception:
             pass
     groups = _group_by_event(hist_dicts)
 
-    if debug_mode:
-        with st.expander("Debug: Historical mention markets"):
-            total_fetched = len(hist_dicts)
-            non_dict_entries = len(data) - len(hist_dicts)
-            uniq_series = len({str(m.get("series_ticker") or "") for m in hist_dicts})
-            uniq_events = len({str(m.get("event_ticker") or "") for m in hist_dicts})
-            status_counts = Counter([str(m.get("status") or "").lower() for m in hist_dicts])
-            res_counts = Counter([str((m.get("result") or "")).lower() for m in hist_dicts])
-            ev_to_tickers = defaultdict(set)
-            for m in hist_dicts:
-                ev = str(m.get("event_ticker") or "")
-                if not ev:
-                    ev = str(m.get("title") or m.get("ticker") or "Unknown")
-                t = m.get("ticker")
-                if t:
-                    ev_to_tickers[ev].add(t)
-            ev_sizes = sorted([(ev, len(tks)) for ev, tks in ev_to_tickers.items()], key=lambda x: x[1], reverse=True)
-            num_events_gt1 = sum(1 for _, n in ev_sizes if n > 1)
-            st.write(
-                {
-                    "fetched_markets_dicts": total_fetched,
-                    "non_dict_entries": non_dict_entries,
-                    "unique_series": uniq_series,
-                    "unique_events": uniq_events,
-                    "status_counts": dict(status_counts),
-                    "result_counts": dict(res_counts),
-                    "events_with_>1_strikes": num_events_gt1,
-                    "events_total": len(ev_sizes),
-                    "groups_count": len(groups),
-                }
-            )
-            if hist_dicts:
-                sample_cols = ["ticker", "event_ticker", "series_ticker", "title", "status", "result", "close_time"]
-                sample_rows = []
-                for m in hist_dicts[:10]:
-                    sample_rows.append({k: m.get(k) for k in sample_cols})
-                st.caption("Sample historical markets (first 10)")
-                st.dataframe(pd.DataFrame(sample_rows), hide_index=True, width="stretch")
 
     # Bulk tag fetch for first tickers of each group
     tickers = [g["items"][0].get("ticker") for g in groups if g.get("items")]
@@ -391,7 +348,7 @@ def main() -> None:
     st.divider()
     st.subheader("Results")
 
-    # Render small cards 8 per row (title + final volume + end date)
+    # Render small cards 8 per row (title + final volume + end date) with palette
     cols_per_row = 8
     for i in range(0, len(groups), cols_per_row):
         row = groups[i : i + cols_per_row]
@@ -400,9 +357,20 @@ def main() -> None:
         for col, g in zip(cols, row):
             with col:
                 end_disp = g["last_ts"].strftime("%b %d, %Y %H:%M UTC") if g.get("last_ts") is not None else "—"
+                # palette: green (<1w), blue (<1m), red (older)
+                import time as _t
+                now = int(_t.time())
+                day = 86400
+                end_epoch = int(g["last_ts"].timestamp()) if g.get("last_ts") is not None else None
+                if end_epoch is not None and (now - end_epoch) < 7 * day:
+                    bg = "#e8f5e9"; border = "#43a047"
+                elif end_epoch is not None and (now - end_epoch) < 30 * day:
+                    bg = "#e3f2fd"; border = "#1e88e5"
+                else:
+                    bg = "#ffebee"; border = "#e53935"
                 st.markdown(
                     f"""
-                    <div style="background:#f8f9fa;border:1px solid #e0e0e0;border-radius:10px;padding:10px;margin-bottom:6px;">
+                    <div style="background:{bg};border:1px solid {border};border-radius:10px;padding:10px;margin-bottom:6px;">
                       <div style="font-weight:600;margin-bottom:6px;line-height:1.2;color:#000">{g.get('display_title') or g.get('event_ticker')}</div>
                       <div style="font-size:12px;color:#000;">Final volume: <b>{int(g['total_volume']):,}</b></div>
                       <div style="font-size:12px;color:#000;">End: <b>{end_disp}</b></div>
@@ -476,6 +444,24 @@ def main() -> None:
                 continue
             by_word.setdefault(word, []).append(m)
 
+        # Filter controls for recency buckets
+        bucket_choice = st.radio("Filter by recency", options=["All", "Green (<1w)", "Blue (<1m)", "Red (older)"], horizontal=True, index=0)
+        import time as _t
+        now = int(_t.time())
+        day = 86400
+        def in_bucket(ts: pd.Timestamp | None) -> bool:
+            if bucket_choice == "All" or ts is None:
+                return bucket_choice == "All"
+            epoch = int(ts.timestamp())
+            delta = now - epoch
+            if bucket_choice.startswith("Green"):
+                return delta < 7 * day
+            if bucket_choice.startswith("Blue"):
+                return delta < 30 * day and delta >= 7 * day
+            if bucket_choice.startswith("Red"):
+                return delta >= 30 * day
+            return True
+
         rows = []
         for word, items in by_word.items():
             total = len(items)
@@ -490,6 +476,8 @@ def main() -> None:
                 ts = _safe_parse_dt(m.get("close_time") or m.get("end_date") or m.get("expiry_time") or m.get("latest_expiration_time"))
                 if ts is not None and (most_recent_ts is None or ts > most_recent_ts):
                     most_recent_ts = ts
+            if bucket_choice != "All" and not in_bucket(most_recent_ts):
+                continue
             pct = (said_count / total * 100.0) if total else 0.0
             avg_vol = (vol_sum / total) if total else 0.0
             rows.append(
@@ -503,6 +491,7 @@ def main() -> None:
                 }
             )
         if rows:
+            # Sort with Events Possible desc first as requested
             df_sum = pd.DataFrame(rows).sort_values(by=["Events possible", "Times said"], ascending=[False, False])
             st.dataframe(df_sum, width="stretch", hide_index=True)
         else:
