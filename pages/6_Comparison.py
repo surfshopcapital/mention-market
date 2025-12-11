@@ -108,9 +108,9 @@ def main() -> None:
 	def bucketize(x: float) -> str:
 		if x <= 5.0:
 			return "green"
-		if x <= 15.0:
+		if x <= 20.0:
 			return "blue"
-		if x >= 25.0:
+		if x >= 20.0:
 			return "red"
 		return ""
 	join["Diff bucket"] = join["Diff (%)"].apply(bucketize)
