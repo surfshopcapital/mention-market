@@ -433,42 +433,42 @@ def main() -> None:
                         df = df.sort_values(by="Yes Bid (¢)", ascending=False, na_position="last")
                     st.dataframe(df, width="stretch", hide_index=True)
 
-                    # Played controls per market (persistent)
-                    st.caption("Mark markets as played and add notes")
-                    for m in selected_group_in_row["items"]:
-                        ticker = str(m.get("ticker") or "")
-                        desc = _derive_description(m)
-                        cols_ctl = st.columns([3, 1, 3])
-                        with cols_ctl[0]:
-                            st.write(f"{ticker} – {desc}")
-                        with cols_ctl[1]:
-                            if st.checkbox("Played", key=f"played_{ticker}"):
-                                try:
-                                    # Lazy import to avoid hard failure on environments missing migrations
-                                    from src.storage import upsert_trade_entry  # type: ignore
-                                    with get_session() as sess:
-                                        upsert_trade_entry(
-                                            sess,
-                                            market_ticker=ticker,
-                                            event_ticker=str(selected_group_in_row.get("event_ticker") or ""),
-                                            title=str(selected_group_in_row.get("display_title") or ""),
-                                            word=str(desc or ""),
-                                            note="",
-                                        )
-                                    st.success("Saved")
-                                except Exception:
-                                    st.warning("Failed to save played market")
-                        with cols_ctl[2]:
-                            note_key = f"note_{ticker}"
-                            note_val = st.text_input("Note", key=note_key, label_visibility="collapsed", placeholder="Add note")
-                            if st.button("Save note", key=f"save_note_{ticker}"):
-                                try:
-                                    from src.storage import set_trade_note  # type: ignore
-                                    with get_session() as sess:
-                                        set_trade_note(sess, ticker, note_val or "")
-                                    st.success("Note saved")
-                                except Exception:
-                                    st.warning("Failed to save note")
+                    # Played controls per EVENT (persistent)
+                    st.caption("Mark event as played and add notes")
+                    evt_ticker = str(selected_group_in_row.get("event_ticker") or "")
+                    evt_title = str(selected_group_in_row.get("display_title") or evt_ticker or "Event")
+                    cols_evt = st.columns([3, 1, 3])
+                    with cols_evt[0]:
+                        st.write(f"{evt_ticker} – {evt_title}")
+                    with cols_evt[1]:
+                        if st.checkbox("Played", key=f"played_evt_{evt_ticker}"):
+                            try:
+                                # Lazy import to avoid hard failure on environments missing migrations
+                                from src.storage import upsert_trade_entry  # type: ignore
+                                with get_session() as sess:
+                                    # Use event_ticker as unique key in trade journal
+                                    upsert_trade_entry(
+                                        sess,
+                                        market_ticker=evt_ticker,
+                                        event_ticker=evt_ticker,
+                                        title=evt_title,
+                                        word="",
+                                        note="",
+                                    )
+                                st.success("Event saved")
+                            except Exception:
+                                st.warning("Failed to save played event")
+                    with cols_evt[2]:
+                        note_key_evt = f"note_evt_{evt_ticker}"
+                        note_val_evt = st.text_input("Note", key=note_key_evt, label_visibility="collapsed", placeholder="Add event note")
+                        if st.button("Save event note", key=f"save_note_evt_{evt_ticker}"):
+                            try:
+                                from src.storage import set_trade_note  # type: ignore
+                                with get_session() as sess:
+                                    set_trade_note(sess, evt_ticker, note_val_evt or "")
+                                st.success("Note saved")
+                            except Exception:
+                                st.warning("Failed to save note")
 
                     strikes: list[str] = []
                     for term in df.get("Description", []).tolist() if "Description" in df.columns else []:
