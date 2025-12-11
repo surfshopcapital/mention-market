@@ -460,6 +460,8 @@ def main() -> None:
             # Sort with Events Possible desc first as requested
             df_sum = pd.DataFrame(rows).sort_values(by=["Events possible", "Times said"], ascending=[False, False])
             st.dataframe(df_sum, width="stretch", hide_index=True)
+            # Save to session for Comparison page
+            st.session_state["hist_summary_df"] = df_sum
         else:
             st.info("No strikes found for the current filters.")
     except Exception:

@@ -361,7 +361,7 @@ def main() -> None:
                         # Stable group key based on first ticker (fallback to index + title)
                         first_ticker = g["items"][0].get("ticker") if g["items"] else ""
                         group_key = (first_ticker or g.get("event_ticker") or f"{i}_{abs(hash(g.get('display_title', '')))}").replace(" ", "_")
-                        ctrl_cols = st.columns([1, 1, 3])
+                        ctrl_cols = st.columns([1, 1, 1, 2])
                         with ctrl_cols[0]:
                             if st.button("View strikes", key=f"view_{group_key}"):
                                 st.session_state["mm_selected_event"] = g.get("event_ticker") or g.get("display_title")
@@ -370,6 +370,11 @@ def main() -> None:
                         with ctrl_cols[1]:
                             apply = st.button("Add tag", key=f"add_tag_{group_key}", disabled=(not first_ticker))
                         with ctrl_cols[2]:
+                            # Stage for comparison page
+                            if st.checkbox("Compare", key=f"compare_{group_key}"):
+                                st.session_state["compare_event"] = g
+                                st.success("Event staged for comparison. Open the Comparison page.")
+                        with ctrl_cols[3]:
                             tag_val = st.text_input(
                                 "Tag",
                                 value="",
