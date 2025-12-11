@@ -12,6 +12,7 @@ from src.config import get_kalshi_api_base_url
 from src.db import get_session, init_db
 from src.storage import add_market_tags, get_market_tags, get_market_tags_bulk
 from src.ui_components import inject_dark_theme
+from src.data_cache import get_cached_mention_universe
 
 
 def _to_display_df(markets: list[dict]) -> pd.DataFrame:
@@ -53,10 +54,9 @@ def _to_display_df(markets: list[dict]) -> pd.DataFrame:
     return df[existing_cols]
 
 
-@st.cache_data(show_spinner=False, ttl=300)
-def _fetch_mention_events_cached(cache_key: str) -> list[dict]:
-    client = KalshiClient()
-    return client.list_mention_events_active()
+def _load_events_from_cache(cache_bust: int) -> list[dict]:
+    uni = get_cached_mention_universe(cache_bust)
+    return list(uni.get("events_active") or [])
 
 
 def _safe_parse_dt(value: object) -> str:
@@ -186,7 +186,11 @@ def main() -> None:
     with tab_main:
         try:
             with st.spinner("Loading mention events..."):
-                events = _fetch_mention_events_cached(cache_key)
+                bust = st.session_state.get("global_cache_bust", 0)
+                if manual:
+                    bust = int(bust) + 1
+                    st.session_state["global_cache_bust"] = bust
+                events = _load_events_from_cache(bust)
         except Exception as e:
             st.error(f"Failed to load markets: {e}")
             return
