@@ -10,7 +10,7 @@ from collections import Counter, defaultdict
 from src.kalshi import KalshiClient
 from src.config import get_kalshi_api_base_url
 from src.db import get_session, init_db
-from src.storage import add_market_tags, get_market_tags, get_market_tags_bulk, upsert_trade_entry, set_trade_note
+from src.storage import add_market_tags, get_market_tags, get_market_tags_bulk
 from src.ui_components import inject_dark_theme
 from src.data_cache import get_cached_mention_universe
 
@@ -444,6 +444,8 @@ def main() -> None:
                         with cols_ctl[1]:
                             if st.checkbox("Played", key=f"played_{ticker}"):
                                 try:
+                                    # Lazy import to avoid hard failure on environments missing migrations
+                                    from src.storage import upsert_trade_entry  # type: ignore
                                     with get_session() as sess:
                                         upsert_trade_entry(
                                             sess,
@@ -461,6 +463,7 @@ def main() -> None:
                             note_val = st.text_input("Note", key=note_key, label_visibility="collapsed", placeholder="Add note")
                             if st.button("Save note", key=f"save_note_{ticker}"):
                                 try:
+                                    from src.storage import set_trade_note  # type: ignore
                                     with get_session() as sess:
                                         set_trade_note(sess, ticker, note_val or "")
                                     st.success("Note saved")

@@ -6,7 +6,6 @@ import pandas as pd
 import streamlit as st
 
 from src.db import get_session, init_db
-from src.storage import list_trade_entries, set_trade_note
 from src.ui_components import inject_dark_theme
 
 
@@ -32,6 +31,13 @@ def main() -> None:
 
 	start_dt = pd.Timestamp(start).to_pydatetime() if start else None
 	end_dt = pd.Timestamp(end).to_pydatetime() if end else None
+
+	# Lazy import to avoid ImportError on cold deployments before migrations
+	try:
+		from src.storage import list_trade_entries, set_trade_note  # type: ignore
+	except Exception as e:
+		st.error("Trade storage is unavailable. Please refresh after migrations complete.")
+		return
 
 	with get_session() as sess:
 		rows = list_trade_entries(sess, search=q.strip() or None, start=start_dt, end=end_dt)
