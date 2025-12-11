@@ -391,6 +391,7 @@ def main() -> None:
     # Strike summary across the filtered set
     st.divider()
     st.subheader("Strike summary")
+    search_word = st.text_input("Search strikes (word contains)", value="", placeholder="e.g., tax, ukraine, inflation")
     try:
         # Limit to events currently included (after optional tag filtering)
         included_events = {g.get("event_ticker") for g in groups if g.get("event_ticker")}
@@ -404,21 +405,23 @@ def main() -> None:
             by_word.setdefault(word, []).append(m)
 
         # Filter controls for recency buckets
-        bucket_choice = st.radio("Filter by recency", options=["All", "Green (<1w)", "Blue (<1m)", "Red (older)"], horizontal=True, index=0)
+        bucket_choice = st.radio("Filter by recency", options=["All", "Green (≤1w)", "Blue (≤1m)", "Red (>1m)"], horizontal=True, index=0)
         import time as _t
         now = int(_t.time())
         day = 86400
         def in_bucket(ts: pd.Timestamp | None) -> bool:
-            if bucket_choice == "All" or ts is None:
-                return bucket_choice == "All"
+            if bucket_choice == "All":
+                return True
+            if ts is None:
+                return False
             epoch = int(ts.timestamp())
             delta = now - epoch
-            if bucket_choice.startswith("Green"):
-                return delta < 7 * day
-            if bucket_choice.startswith("Blue"):
-                return delta < 30 * day and delta >= 7 * day
-            if bucket_choice.startswith("Red"):
-                return delta >= 30 * day
+            if bucket_choice.startswith("Green"):  # inclusive: ≤ 7d
+                return delta <= 7 * day
+            if bucket_choice.startswith("Blue"):   # inclusive: ≤ 30d (includes green)
+                return delta <= 30 * day
+            if bucket_choice.startswith("Red"):    # older than 30d
+                return delta > 30 * day
             return True
 
         rows = []
@@ -439,6 +442,10 @@ def main() -> None:
                 continue
             pct = (said_count / total * 100.0) if total else 0.0
             avg_vol = (vol_sum / total) if total else 0.0
+            # Search filter on word
+            if search_word.strip():
+                if search_word.strip().lower() not in word.lower():
+                    continue
             rows.append(
                 {
                     "Strike (word)": word,

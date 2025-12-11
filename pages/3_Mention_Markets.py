@@ -10,7 +10,7 @@ from collections import Counter, defaultdict
 from src.kalshi import KalshiClient
 from src.config import get_kalshi_api_base_url
 from src.db import get_session, init_db
-from src.storage import add_market_tags, get_market_tags, get_market_tags_bulk
+from src.storage import add_market_tags, get_market_tags, get_market_tags_bulk, upsert_trade_entry, set_trade_note
 from src.ui_components import inject_dark_theme
 from src.data_cache import get_cached_mention_universe
 
@@ -432,6 +432,41 @@ def main() -> None:
                     if "Yes Bid (¢)" in df.columns:
                         df = df.sort_values(by="Yes Bid (¢)", ascending=False, na_position="last")
                     st.dataframe(df, width="stretch", hide_index=True)
+
+                    # Played controls per market (persistent)
+                    st.caption("Mark markets as played and add notes")
+                    for m in selected_group_in_row["items"]:
+                        ticker = str(m.get("ticker") or "")
+                        desc = _derive_description(m)
+                        cols_ctl = st.columns([3, 1, 3])
+                        with cols_ctl[0]:
+                            st.write(f"{ticker} – {desc}")
+                        with cols_ctl[1]:
+                            if st.checkbox("Played", key=f"played_{ticker}"):
+                                try:
+                                    with get_session() as sess:
+                                        upsert_trade_entry(
+                                            sess,
+                                            market_ticker=ticker,
+                                            event_ticker=str(selected_group_in_row.get("event_ticker") or ""),
+                                            title=str(selected_group_in_row.get("display_title") or ""),
+                                            word=str(desc or ""),
+                                            note="",
+                                        )
+                                    st.success("Saved")
+                                except Exception:
+                                    st.warning("Failed to save played market")
+                        with cols_ctl[2]:
+                            note_key = f"note_{ticker}"
+                            note_val = st.text_input("Note", key=note_key, label_visibility="collapsed", placeholder="Add note")
+                            if st.button("Save note", key=f"save_note_{ticker}"):
+                                try:
+                                    with get_session() as sess:
+                                        set_trade_note(sess, ticker, note_val or "")
+                                    st.success("Note saved")
+                                except Exception:
+                                    st.warning("Failed to save note")
+
                     strikes: list[str] = []
                     for term in df.get("Description", []).tolist() if "Description" in df.columns else []:
                         t = str(term or "").strip()

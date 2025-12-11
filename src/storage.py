@@ -5,7 +5,8 @@ from typing import Iterable, List, Optional, Sequence
 from sqlalchemy import asc, desc, select
 from sqlalchemy.orm import Session
 
-from .models import MarketTag, Tag, Transcript, transcript_tag_association
+from .models import MarketTag, Tag, Transcript, TradeEntry, transcript_tag_association
+from datetime import datetime
 
 
 def create_transcript(
@@ -138,4 +139,74 @@ def get_market_tags_bulk(session: Session, tickers: Sequence[str]) -> dict[str, 
     for k in list(mapping.keys()):
         mapping[k] = sorted(list({*mapping.get(k, [])}))
     return mapping
+
+
+# Trade journal helpers
+def upsert_trade_entry(
+    session: Session,
+    *,
+    market_ticker: str,
+    event_ticker: str = "",
+    title: str = "",
+    word: str = "",
+    note: str = "",
+) -> None:
+    existing = session.scalars(select(TradeEntry).where(TradeEntry.market_ticker == market_ticker)).first()
+    if existing:
+        # Update note and metadata; refresh played_at to now
+        existing.event_ticker = event_ticker or existing.event_ticker
+        existing.title = title or existing.title
+        existing.word = word or existing.word
+        if note is not None:
+            existing.note = note
+        existing.played_at = datetime.utcnow()
+        session.add(existing)
+        return
+    entry = TradeEntry(
+        market_ticker=market_ticker,
+        event_ticker=event_ticker or "",
+        title=title or "",
+        word=word or "",
+        note=note or "",
+        played_at=datetime.utcnow(),
+    )
+    session.add(entry)
+
+
+def set_trade_note(session: Session, market_ticker: str, note: str) -> None:
+    entry = session.scalars(select(TradeEntry).where(TradeEntry.market_ticker == market_ticker)).first()
+    if not entry:
+        entry = TradeEntry(market_ticker=market_ticker, note=note or "", played_at=datetime.utcnow())
+    else:
+        entry.note = note or ""
+    session.add(entry)
+
+
+def list_trade_entries(
+    session: Session,
+    *,
+    search: Optional[str] = None,
+    start: Optional[datetime] = None,
+    end: Optional[datetime] = None,
+) -> List[TradeEntry]:
+    rows = session.scalars(select(TradeEntry)).all()
+    results = rows
+    if search:
+        needle = search.lower()
+        results = [
+            r
+            for r in results
+            if needle in (r.market_ticker or "").lower()
+            or needle in (r.event_ticker or "").lower()
+            or needle in (r.title or "").lower()
+            or needle in (r.word or "").lower()
+            or needle in (r.note or "").lower()
+        ]
+    if start:
+        results = [r for r in results if r.played_at >= start]
+    if end:
+        results = [r for r in results if r.played_at <= end]
+    # Sort newest first
+    results.sort(key=lambda r: r.played_at, reverse=True)
+    return results
 

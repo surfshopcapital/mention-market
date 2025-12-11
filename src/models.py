@@ -63,3 +63,15 @@ class MarketTag(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
 
+class TradeEntry(Base):
+    __tablename__ = "trade_entries"
+    __table_args__ = (UniqueConstraint("market_ticker", name="uq_trade_market"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    market_ticker: Mapped[str] = mapped_column(String(128), index=True, nullable=False)
+    event_ticker: Mapped[str] = mapped_column(String(128), index=True, nullable=False, default="")
+    title: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    word: Mapped[str] = mapped_column(String(256), nullable=False, default="")
+    note: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    played_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
