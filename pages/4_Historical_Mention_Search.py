@@ -138,24 +138,14 @@ def _fetch_history(term: str, months: int, include_closed: bool, cache_key: str)
     markets: List[dict] = []
     for e in all_events:
         mkts = [m for m in (e.get("markets") or []) if isinstance(m, dict)]
+        # Require: event title contains the search term (if provided)
         if needle:
-            hay = " ".join([
-                str(e.get("title", "")),
-                str(e.get("series_ticker", "")),
-                str(e.get("event_ticker", "")),
-            ]).lower()
-            # keep if event matches OR any market matches
-            ev_match = (needle in hay)
-            if not ev_match:
-                mkts2 = []
-                for m in mkts:
-                    mhay = " ".join([
-                        str(m.get("title","")), str(m.get("subtitle","")), str(m.get("yes_sub_title","")),
-                        str(m.get("no_sub_title","")), str(m.get("ticker",""))
-                    ]).lower()
-                    if needle in mhay:
-                        mkts2.append(m)
-                mkts = mkts2
+            title_text = str(e.get("title", "")).lower()
+            if needle not in title_text:
+                continue
+        # Exclude small events: only include if event has more than 2 markets (strikes)
+        if len(mkts) <= 2:
+            continue
         markets.extend(mkts)
     return markets
 
@@ -401,7 +391,7 @@ def main() -> None:
     st.divider()
     st.subheader("Results")
 
-    # Render small cards 8 per row (title + final volume)
+    # Render small cards 8 per row (title + final volume + end date)
     cols_per_row = 8
     for i in range(0, len(groups), cols_per_row):
         row = groups[i : i + cols_per_row]
@@ -409,11 +399,13 @@ def main() -> None:
         selected_group_in_row = None
         for col, g in zip(cols, row):
             with col:
+                end_disp = g["last_ts"].strftime("%b %d, %Y %H:%M UTC") if g.get("last_ts") is not None else "—"
                 st.markdown(
                     f"""
                     <div style="background:#f8f9fa;border:1px solid #e0e0e0;border-radius:10px;padding:10px;margin-bottom:6px;">
                       <div style="font-weight:600;margin-bottom:6px;line-height:1.2;color:#000">{g.get('display_title') or g.get('event_ticker')}</div>
                       <div style="font-size:12px;color:#000;">Final volume: <b>{int(g['total_volume']):,}</b></div>
+                      <div style="font-size:12px;color:#000;">End: <b>{end_disp}</b></div>
                     </div>
                     """,
                     unsafe_allow_html=True,
@@ -468,6 +460,55 @@ def main() -> None:
                     st.dataframe(raw_df, hide_index=True, width="stretch")
                 except Exception:
                     st.write(selected_group_in_row["items"])
+
+    # Strike summary across the filtered set
+    st.divider()
+    st.subheader("Strike summary")
+    try:
+        # Limit to events currently included (after optional tag filtering)
+        included_events = {g.get("event_ticker") for g in groups if g.get("event_ticker")}
+        summary_markets = [m for m in hist_dicts if str(m.get("event_ticker") or "") in included_events] if included_events else list(hist_dicts)
+
+        by_word: Dict[str, List[dict]] = {}
+        for m in summary_markets:
+            word = _derive_description(m)
+            if not word:
+                continue
+            by_word.setdefault(word, []).append(m)
+
+        rows = []
+        for word, items in by_word.items():
+            total = len(items)
+            said_count = 0
+            vol_sum = 0
+            most_recent_ts = None
+            for m in items:
+                res = (m.get("result") or "").strip().upper()
+                if res == "YES":
+                    said_count += 1
+                vol_sum += int(m.get("volume") or 0)
+                ts = _safe_parse_dt(m.get("close_time") or m.get("end_date") or m.get("expiry_time") or m.get("latest_expiration_time"))
+                if ts is not None and (most_recent_ts is None or ts > most_recent_ts):
+                    most_recent_ts = ts
+            pct = (said_count / total * 100.0) if total else 0.0
+            avg_vol = (vol_sum / total) if total else 0.0
+            rows.append(
+                {
+                    "Strike (word)": word,
+                    "Times said": said_count,
+                    "Events possible": total,
+                    "% said": round(pct, 2),
+                    "Average volume": int(avg_vol),
+                    "Most recent end": most_recent_ts.strftime("%b %d, %Y %H:%M UTC") if most_recent_ts is not None else "—",
+                }
+            )
+        if rows:
+            df_sum = pd.DataFrame(rows).sort_values(by=["Events possible", "Times said"], ascending=[False, False])
+            st.dataframe(df_sum, width="stretch", hide_index=True)
+        else:
+            st.info("No strikes found for the current filters.")
+    except Exception:
+        st.info("Summary unavailable for current selection.")
 
 
 if __name__ == "__main__":
