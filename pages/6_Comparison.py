@@ -24,15 +24,26 @@ def _build_event_strikes_df(event: dict) -> pd.DataFrame:
 	rows = []
 	for m in (event.get("items") or []):
 		price = m.get("yes_bid") or m.get("yes_price") or (m.get("orderbook") or {}).get("yes_bid")
+		ask = m.get("yes_ask") or (m.get("orderbook") or {}).get("yes_ask")
+		vol = m.get("volume")
 		try:
 			price = float(price or 0)
 		except Exception:
 			price = 0.0
+		try:
+			ask = float(ask or 0)
+		except Exception:
+			ask = 0.0
+		try:
+			vol = int(vol or 0)
+		except Exception:
+			vol = 0
 		rows.append(
 			{
 				"Word": _derive_description(m),
 				"Yes Bid (%)": price,  # cents ~ percentage
-				"Market": m.get("ticker"),
+				"Yes Ask (%)": ask,
+				"Volume": vol,
 			}
 		)
 	df = pd.DataFrame(rows)
@@ -45,12 +56,12 @@ def _style_diff(df: pd.DataFrame) -> pd.io.formats.style.Styler:
 	def color_row(row):
 		bucket = row.get("Diff bucket", "")
 		if bucket == "green":
-			return ["background-color: #e8f5e9"] * len(row)
+			return ["background-color: #e8f5e9; color: #000"] * len(row)
 		if bucket == "blue":
-			return ["background-color: #e3f2fd"] * len(row)
+			return ["background-color: #e3f2fd; color: #000"] * len(row)
 		if bucket == "red":
-			return ["background-color: #ffebee"] * len(row)
-		return [""] * len(row)
+			return ["background-color: #ffebee; color: #000"] * len(row)
+		return ["color: #000"] * len(row)
 
 	return df.style.apply(color_row, axis=1)
 
