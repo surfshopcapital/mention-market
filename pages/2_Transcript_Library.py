@@ -12,11 +12,11 @@ from src.storage import (
     set_transcript_tags,
     update_transcript_title,
 )
-from src.text_processing import extract_text, normalize_text_for_counting, tokenize_words
+from src.text_processing import extract_text, normalize_text_for_counting, tokenize_words, extract_transcripts_from_json
 from src.ui_components import render_library_selector, render_tag_editor, inject_dark_theme
 
 
-def _save_uploaded_files(files: list[object]) -> list[int]:
+def _save_uploaded_files(files: list[object], *, json_auto_tags: list[str] | None = None) -> list[int]:
     new_ids: list[int] = []
     for f in files:
         file_type = (f.type or "").lower()
@@ -25,25 +25,49 @@ def _save_uploaded_files(files: list[object]) -> list[int]:
             simple_type = "pdf"
         elif f.name.lower().endswith(".docx") or "word" in file_type:
             simple_type = "docx"
+        elif f.name.lower().endswith(".json") or "json" in file_type:
+            simple_type = "json"
 
         file_bytes = f.getvalue()
-        text = extract_text(file_bytes, simple_type)
-        normalized = normalize_text_for_counting(text)
-        tokens = tokenize_words(normalized)
+        if simple_type == "json":
+            items = extract_transcripts_from_json(file_bytes)
+            for title, text in items:
+                normalized = normalize_text_for_counting(text or "")
+                tokens = tokenize_words(normalized)
+                with get_session() as session:
+                    new_id = create_transcript(
+                        session=session,
+                        title=title or f.name,
+                        original_filename=f.name,
+                        storage_location="",
+                        text_content=text or "",
+                        word_count=len(tokens),
+                        estimated_minutes=(len(tokens) / max(st.session_state.get("words_per_minute", 150), 1)),
+                        file_type=simple_type,
+                        notes="",
+                    )
+                    # Auto-tag only for JSON uploads if provided
+                    if json_auto_tags:
+                        set_transcript_tags(session, new_id, json_auto_tags)
+                    new_ids.append(new_id)
+        else:
+            text = extract_text(file_bytes, simple_type)
+            normalized = normalize_text_for_counting(text)
+            tokens = tokenize_words(normalized)
 
-        with get_session() as session:
-            new_id = create_transcript(
-                session=session,
-                title=f.name,
-                original_filename=f.name,
-                storage_location="",
-                text_content=text,
-                word_count=len(tokens),
-                estimated_minutes=(len(tokens) / max(st.session_state.get("words_per_minute", 150), 1)),
-                file_type=simple_type,
-                notes="",
-            )
-            new_ids.append(new_id)
+            with get_session() as session:
+                new_id = create_transcript(
+                    session=session,
+                    title=f.name,
+                    original_filename=f.name,
+                    storage_location="",
+                    text_content=text,
+                    word_count=len(tokens),
+                    estimated_minutes=(len(tokens) / max(st.session_state.get("words_per_minute", 150), 1)),
+                    file_type=simple_type,
+                    notes="",
+                )
+                new_ids.append(new_id)
     return new_ids
 
 
@@ -76,12 +100,14 @@ def main() -> None:
 
     st.subheader("Upload transcript")
     files = st.file_uploader(
-        "Upload one or more transcripts (PDF, DOCX, or TXT).",
-        type=["pdf", "docx", "txt"],
+        "Upload one or more transcripts (PDF, DOCX, TXT, or JSON).",
+        type=["pdf", "docx", "txt", "json"],
         accept_multiple_files=True,
     )
+    json_tags_raw = st.text_input("Auto-tag for JSON uploads (optional, comma-separated)", value="")
     if files and st.button("Upload", type="primary"):
-        ids = _save_uploaded_files(list(files))
+        json_auto_tags = [t.strip() for t in json_tags_raw.split(",") if t.strip()] if json_tags_raw else None
+        ids = _save_uploaded_files(list(files), json_auto_tags=json_auto_tags)
         st.success(f"Uploaded {len(ids)} transcript(s).")
 
     st.divider()
@@ -95,6 +121,34 @@ def main() -> None:
     st.subheader("Manage transcript(s)")
     selected_ids = render_library_selector(transcripts, key="library_selector", label="Select transcript(s) for edit/bulk tag")
     selected_id: Optional[int] = selected_ids[0] if selected_ids else None
+
+    # Bulk delete by index range (based on current table order)
+    st.markdown("Bulk delete by index range")
+    total = len(transcripts)
+    if total > 0:
+        cols_del = st.columns(4)
+        with cols_del[0]:
+            start_idx = st.number_input("Start (1-based)", min_value=1, max_value=total, value=1, step=1, key="del_start")
+        with cols_del[1]:
+            end_idx = st.number_input("End (1-based, inclusive)", min_value=1, max_value=total, value=min(total, 10), step=1, key="del_end")
+        with cols_del[2]:
+            confirm = st.checkbox("Confirm deletion", value=False, key="del_confirm")
+        with cols_del[3]:
+            do_delete = st.button("Delete range", type="secondary", disabled=not confirm)
+        if do_delete:
+            s = int(start_idx)
+            e = int(end_idx)
+            if s > e:
+                s, e = e, s
+            s = max(1, s)
+            e = min(total, e)
+            to_delete = transcripts[s-1:e]
+            with get_session() as session:
+                for t in to_delete:
+                    delete_transcript(session, int(t.id))
+            st.success(f"Deleted {len(to_delete)} transcript(s) from index {s} to {e}.")
+            st.rerun()
+    st.divider()
 
     # Bulk tag editor
     if len(selected_ids) > 1:
