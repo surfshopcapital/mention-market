@@ -14,6 +14,7 @@ from src.storage import (
 from src.text_processing import (
     compute_keyword_stats,
     extract_text,
+    extract_transcripts_from_json,
     normalize_text_for_counting,
     tokenize_words,
 )
@@ -36,25 +37,47 @@ def _save_uploaded_files(files: Sequence[object]) -> list[int]:
             simple_type = "pdf"
         elif f.name.lower().endswith(".docx") or "word" in file_type:
             simple_type = "docx"
+        elif f.name.lower().endswith(".json") or "json" in file_type:
+            simple_type = "json"
 
         file_bytes = f.getvalue()
-        text = extract_text(file_bytes, simple_type)
-        normalized = normalize_text_for_counting(text)
-        tokens = tokenize_words(normalized)
+        if simple_type == "json":
+            # May contain multiple raw transcripts; extract all
+            items = extract_transcripts_from_json(file_bytes)
+            for title, text in items:
+                normalized = normalize_text_for_counting(text or "")
+                tokens = tokenize_words(normalized)
+                with get_session() as session:
+                    new_id = create_transcript(
+                        session=session,
+                        title=title or f.name,
+                        original_filename=f.name,
+                        storage_location="",
+                        text_content=text or "",
+                        word_count=len(tokens),
+                        estimated_minutes=(len(tokens) / max(st.session_state.get("words_per_minute", 150), 1)),
+                        file_type=simple_type,
+                        notes="",
+                    )
+                    new_ids.append(new_id)
+        else:
+            text = extract_text(file_bytes, simple_type)
+            normalized = normalize_text_for_counting(text)
+            tokens = tokenize_words(normalized)
 
-        with get_session() as session:
-            new_id = create_transcript(
-                session=session,
-                title=f.name,
-                original_filename=f.name,
-                storage_location="",
-                text_content=text,
-                word_count=len(tokens),
-                estimated_minutes=(len(tokens) / max(st.session_state.get("words_per_minute", 150), 1)),
-                file_type=simple_type,
-                notes="",
-            )
-            new_ids.append(new_id)
+            with get_session() as session:
+                new_id = create_transcript(
+                    session=session,
+                    title=f.name,
+                    original_filename=f.name,
+                    storage_location="",
+                    text_content=text,
+                    word_count=len(tokens),
+                    estimated_minutes=(len(tokens) / max(st.session_state.get("words_per_minute", 150), 1)),
+                    file_type=simple_type,
+                    notes="",
+                )
+                new_ids.append(new_id)
     return new_ids
 
 
@@ -70,8 +93,8 @@ def main() -> None:
     with left:
         st.subheader("Upload transcripts")
         uploaded = st.file_uploader(
-            "Upload one or more transcripts (PDF, DOCX, or TXT). These will be saved to the library.",
-            type=["pdf", "docx", "txt"],
+            "Upload one or more transcripts (PDF, DOCX, TXT, or JSON). These will be saved to the library.",
+            type=["pdf", "docx", "txt", "json"],
             accept_multiple_files=True,
         )
         new_ids: list[int] = []
@@ -142,6 +165,8 @@ def main() -> None:
 
         df: pd.DataFrame = result["keywords_df"]
         st.dataframe(df, width="stretch", hide_index=True)
+        # Persist for Comparison page (optional use)
+        st.session_state["analysis_keywords_df"] = df
 
         st.caption("Tip: Download as CSV from the dataframe menu for later analysis.")
 

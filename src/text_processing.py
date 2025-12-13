@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import re
+import json
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Sequence, Tuple, Optional
 
@@ -220,5 +221,115 @@ def compute_keyword_stats(
         "avg_transcript_word_count": avg_word_count,
         "avg_transcript_minutes": avg_minutes,
     }
+
+
+def extract_transcripts_from_json(file_bytes: bytes) -> List[Tuple[str, str]]:
+    """
+    Extract a list of (title, text) tuples from a JSON or JSONL payload.
+    The function is resilient to a variety of shapes:
+      - JSON array of objects with text fields (preferred keys: 'text', 'transcript', 'content', 'body')
+      - JSON object with a top-level list under keys like 'transcripts', 'items', 'data'
+      - JSON object mapping ids -> text
+      - JSON string: treated as a single transcript
+      - JSONL (newline-delimited JSON): each line an object with text fields
+    Titles are derived from 'title'/'name'/'id'/'ticker' when available, otherwise a positional label.
+    """
+    def _derive_text(obj: object) -> Optional[str]:
+        if obj is None:
+            return None
+        if isinstance(obj, str):
+            return obj.strip()
+        if isinstance(obj, dict):
+            # Common text field names
+            for k in ("text", "transcript", "content", "body"):
+                v = obj.get(k)
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+            # Sometimes text is provided as a list of segments
+            for k in ("segments", "lines", "paragraphs"):
+                segs = obj.get(k)
+                if isinstance(segs, list):
+                    joined = "\n".join([str(s or "") for s in segs]).strip()
+                    if joined:
+                        return joined
+        return None
+
+    def _derive_title(obj: object, idx: int) -> str:
+        if isinstance(obj, dict):
+            for k in ("title", "name", "id", "ticker", "filename"):
+                v = obj.get(k)
+                if v is not None:
+                    return str(v)[:200]
+        return f"item_{idx+1}"
+
+    # Best-effort UTF-8 decode with fallback
+    try:
+        text = file_bytes.decode("utf-8", errors="ignore")
+    except Exception:
+        text = file_bytes.decode("latin-1", errors="ignore")
+    text = text.strip()
+    if not text:
+        return []
+
+    # 1) Try standard JSON parse
+    try:
+        data = json.loads(text)
+        items: List[Tuple[str, str]] = []
+        if isinstance(data, list):
+            for i, entry in enumerate(data):
+                val = _derive_text(entry)
+                if val:
+                    items.append((_derive_title(entry, i), val))
+        elif isinstance(data, dict):
+            # Object with nested list
+            for key in ("transcripts", "items", "data", "records"):
+                lst = data.get(key)
+                if isinstance(lst, list):
+                    for i, entry in enumerate(lst):
+                        val = _derive_text(entry)
+                        if val:
+                            items.append((_derive_title(entry, i), val))
+                    break
+            else:
+                # Mapping id -> text
+                collected = []
+                for k, v in data.items():
+                    val = _derive_text(v) if not isinstance(v, str) else v.strip()
+                    if val:
+                        collected.append((str(k)[:200], val))
+                if collected:
+                    items.extend(collected)
+                # Single-string payload
+                if not items:
+                    lone = _derive_text(data)
+                    if lone:
+                        items.append(("transcript", lone))
+        elif isinstance(data, str):
+            if data.strip():
+                items.append(("transcript", data.strip()))
+        if items:
+            return items
+    except Exception:
+        pass
+
+    # 2) Try JSONL (newline-delimited JSON)
+    results: List[Tuple[str, str]] = []
+    for i, line in enumerate(text.splitlines()):
+        s = line.strip()
+        if not s:
+            continue
+        try:
+            obj = json.loads(s)
+            val = _derive_text(obj)
+            if val:
+                results.append((_derive_title(obj, i), val))
+        except Exception:
+            # skip non-JSON lines
+            continue
+    if results:
+        return results
+
+    # 3) Fallback: treat entire file as a single transcript
+    return [("transcript", text)]
 
 

@@ -75,17 +75,38 @@ def main() -> None:
 		pass
 
 	st.title("Comparison")
-	st.caption("Compare an active mention event against the current historical Strike Summary.")
+	st.caption("Compare an active mention event against either the Historical Strike Summary or your Transcript Analysis output.")
 
 	compare_event = st.session_state.get("compare_event")
 	hist_df: pd.DataFrame | None = st.session_state.get("hist_summary_df")
+	analysis_df: pd.DataFrame | None = st.session_state.get("analysis_keywords_df")
 
 	if not compare_event:
 		st.info("No event staged for comparison. Go to Mention Markets and check 'Compare' on an event.")
 		return
-	if hist_df is None or hist_df.empty:
-		st.info("Historical Strike Summary is empty. Go to Historical page and generate the summary first.")
-		return
+
+	source = st.radio("Compare against", options=["Historical Strike Summary", "Transcript Analysis Output"], horizontal=True, index=0)
+	metric_name = "% said"
+	if source == "Historical Strike Summary":
+		if hist_df is None or hist_df.empty:
+			st.info("Historical Strike Summary is empty. Go to Historical page and generate the summary first.")
+			return
+	else:
+		# Transcript Analysis path
+		if analysis_df is None or analysis_df.empty:
+			st.info("Transcript Analysis output is empty. Go to Transcript Analysis, compute metrics, then return here.")
+			return
+		# Choose metric to compare
+		with st.expander("Analysis comparison settings", expanded=True):
+			options_map = {
+				"pct_transcripts_with_mention (%)": "pct_transcripts_with_mention",
+				"avg_mentions_per_transcript": "avg_mentions_per_transcript",
+				"total_mentions": "total_mentions",
+				"weighted_mentions": "weighted_mentions",
+			}
+			choice = st.selectbox("Metric to compare", list(options_map.keys()), index=0)
+			metric_name = choice  # display label
+			metric_col = options_map[choice]
 
 	left, right = st.columns(2)
 	with left:
@@ -93,18 +114,39 @@ def main() -> None:
 		df_event = _build_event_strikes_df(compare_event)
 		st.dataframe(df_event, width="stretch", hide_index=True)
 	with right:
-		st.subheader("Historical Strike Summary")
-		st.dataframe(hist_df, width="stretch", hide_index=True)
+		if source == "Historical Strike Summary":
+			st.subheader("Historical Strike Summary")
+			st.dataframe(hist_df, width="stretch", hide_index=True)
+		else:
+			st.subheader("Transcript Analysis Output")
+			st.dataframe(analysis_df, width="stretch", hide_index=True)
 
 	# Join on word
 	if df_event.empty or hist_df.empty:
-		return
-	df_hist = hist_df.rename(columns={"Strike (word)": "Word", "% said": "% said"}).copy()
-	join = pd.merge(df_event, df_hist[["Word", "% said"]], on="Word", how="inner")
+		# For historical path, we need hist_df; for analysis path we'll handle separately
+		if source == "Historical Strike Summary":
+			return
+
+	if source == "Historical Strike Summary":
+		df_hist = hist_df.rename(columns={"Strike (word)": "Word", "% said": "% said"}).copy()
+		join = pd.merge(df_event, df_hist[["Word", "% said"]], on="Word", how="inner")
+		target_col = "% said"
+	else:
+		# Prepare analysis table with 'Word' and the chosen metric
+		df_ana = analysis_df.copy()
+		if "keyword" in df_ana.columns:
+			df_ana = df_ana.rename(columns={"keyword": "Word"})
+		# Determine selected metric column
+		target_col = options_map[choice]
+		if target_col not in df_ana.columns:
+			st.info("Selected metric not available in analysis output.")
+			return
+		join = pd.merge(df_event, df_ana[["Word", target_col]], on="Word", how="inner")
+
 	if join.empty:
-		st.info("No overlapping words between event strikes and historical summary.")
+		st.info("No overlapping words between event strikes and selected comparison table.")
 		return
-	join["Diff (%)"] = (join["Yes Bid (%)"] - join["% said"]).abs()
+	join["Diff (%)"] = (join["Yes Bid (%)"] - join[target_col]).abs()
 	def bucketize(x: float) -> str:
 		if x <= 5.0:
 			return "green"
@@ -117,7 +159,8 @@ def main() -> None:
 	join = join.sort_values(by="Diff (%)", ascending=False)
 
 	st.subheader("Comparison (overlapping words)")
-	st.dataframe(_style_diff(join[["Word", "Yes Bid (%)", "% said", "Diff (%)", "Diff bucket"]]), width="stretch", hide_index=True)
+	cols = ["Word", "Yes Bid (%)", target_col, "Diff (%)", "Diff bucket"]
+	st.dataframe(_style_diff(join[[c for c in cols if c in join.columns]]), width="stretch", hide_index=True)
 
 
 if __name__ == "__main__":
