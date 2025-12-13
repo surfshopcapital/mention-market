@@ -102,6 +102,20 @@ def main() -> None:
             if st.button("Save uploaded transcripts to library", type="primary"):
                 new_ids = _save_uploaded_files(uploaded)
                 st.success(f"Saved {len(new_ids)} transcripts to library.")
+                # Auto-select newly uploaded transcripts in the analysis selector
+                if new_ids:
+                    try:
+                        with get_session() as session:
+                            labels = []
+                            for nid in new_ids:
+                                t = get_transcript(session, int(nid))
+                                if t:
+                                    labels.append(f"{t.title} (#{int(t.id)})")
+                        prev = list(st.session_state.get("analysis_selector_multiselect") or [])
+                        merged = sorted(list({*prev, *labels}))
+                        st.session_state["analysis_selector_multiselect"] = merged
+                    except Exception:
+                        pass
 
     with right:
         st.subheader("Select from library")
