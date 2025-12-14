@@ -10,6 +10,7 @@ from src.storage import (
     create_transcript,
     get_transcript,
     list_transcripts,
+    set_transcript_tags,
 )
 from src.text_processing import (
     compute_keyword_stats,
@@ -26,8 +27,7 @@ from src.ui_components import (
     inject_dark_theme,
 )
 
-
-def _save_uploaded_files(files: Sequence[object]) -> list[int]:
+def _save_uploaded_files(files: Sequence[object], *, auto_tags: list[str] | None = None) -> list[int]:
     new_ids: list[int] = []
     for f in files:
         file_type = (f.type or "").lower()
@@ -59,6 +59,8 @@ def _save_uploaded_files(files: Sequence[object]) -> list[int]:
                         file_type=simple_type,
                         notes="",
                     )
+                    if auto_tags:
+                        set_transcript_tags(session, new_id, auto_tags)
                     new_ids.append(new_id)
         else:
             text = extract_text(file_bytes, simple_type)
@@ -77,6 +79,8 @@ def _save_uploaded_files(files: Sequence[object]) -> list[int]:
                     file_type=simple_type,
                     notes="",
                 )
+                if auto_tags:
+                    set_transcript_tags(session, new_id, auto_tags)
                 new_ids.append(new_id)
     return new_ids
 
@@ -92,6 +96,7 @@ def main() -> None:
     left, right = st.columns([1, 1])
     with left:
         st.subheader("Upload transcripts")
+        auto_tags_raw = st.text_input("Auto-tag on upload (optional, comma-separated)", value="", key="analysis_auto_tags")
         uploaded = st.file_uploader(
             "Upload one or more transcripts (PDF, DOCX, TXT, or JSON). These will be saved to the library.",
             type=["pdf", "docx", "txt", "json"],
@@ -100,7 +105,8 @@ def main() -> None:
         new_ids: list[int] = []
         if uploaded:
             if st.button("Save uploaded transcripts to library", type="primary"):
-                new_ids = _save_uploaded_files(uploaded)
+                auto_tags = [t.strip() for t in auto_tags_raw.split(",") if t.strip()] if auto_tags_raw else None
+                new_ids = _save_uploaded_files(uploaded, auto_tags=auto_tags)
                 st.success(f"Saved {len(new_ids)} transcripts to library.")
                 # Auto-select newly uploaded transcripts in the analysis selector
                 if new_ids:
@@ -125,6 +131,48 @@ def main() -> None:
         if new_ids:
             selected_ids = list(set(selected_ids) | set(new_ids))
 
+        # Quick selection helpers
+        with st.expander("Quick select", expanded=False):
+            total = len(all_transcripts)
+            cols_q = st.columns(4)
+            with cols_q[0]:
+                start_idx = st.number_input("Start (1-based)", min_value=1, max_value=max(total, 1), value=1, step=1, key="analysis_sel_start")
+            with cols_q[1]:
+                end_idx = st.number_input("End (1-based)", min_value=1, max_value=max(total, 1), value=min(10, max(total, 1)), step=1, key="analysis_sel_end")
+            with cols_q[2]:
+                tag_pick = st.text_input("Select all with tag", value="", key="analysis_sel_tag")
+            with cols_q[3]:
+                clear = st.button("Clear all", key="analysis_sel_clear")
+            cols_btn = st.columns(2)
+            with cols_btn[0]:
+                apply_range = st.button("Select range", key="analysis_sel_apply_range")
+            with cols_btn[1]:
+                apply_tag = st.button("Select by tag", key="analysis_sel_apply_tag")
+
+            if clear:
+                st.session_state["analysis_selector_multiselect"] = []
+                st.experimental_rerun()
+
+            if apply_range and total > 0:
+                s = int(start_idx); e = int(end_idx)
+                if s > e: s, e = e, s
+                s = max(1, s); e = min(total, e)
+                # Derive labels and set in multiselect
+                labels = [f"{t.title} (#{int(t.id)})" for t in all_transcripts[s-1:e]]
+                prev = list(st.session_state.get("analysis_selector_multiselect") or [])
+                st.session_state["analysis_selector_multiselect"] = sorted(list({*prev, *labels}))
+                st.experimental_rerun()
+
+            if apply_tag and tag_pick.strip():
+                tag_lower = tag_pick.strip().lower()
+                matches = []
+                for t in all_transcripts:
+                    if any((tg.name or "").lower() == tag_lower for tg in t.tags):
+                        matches.append(f"{t.title} (#{int(t.id)})")
+                prev = list(st.session_state.get("analysis_selector_multiselect") or [])
+                st.session_state["analysis_selector_multiselect"] = sorted(list({*prev, *matches}))
+                st.experimental_rerun()
+
     st.divider()
 
     st.subheader("Keywords")
@@ -143,14 +191,20 @@ def main() -> None:
                 selected_transcripts.append(lookup[tid])
                 index_by_id[int(tid)] = i
 
+    weights_fraction = {}
+    sum_ok = False
     if selected_transcripts:
         st.subheader("Weights")
-        weights_pct = render_transcript_weights(selected_transcripts, key="analysis_weights")
-        weights_fraction = {tid: (pct / 100.0) for tid, pct in weights_pct.items()}
-        sum_ok = abs(sum(weights_pct.values()) - 100.0) < 1e-6
-    else:
-        weights_fraction = {}
-        sum_ok = False
+        adjust_weights = st.checkbox("Adjust weights manually", value=False, key="analysis_weights_toggle")
+        if adjust_weights:
+            weights_pct = render_transcript_weights(selected_transcripts, key="analysis_weights")
+            weights_fraction = {tid: (pct / 100.0) for tid, pct in weights_pct.items()}
+            sum_ok = abs(sum(weights_pct.values()) - 100.0) < 1e-6
+        else:
+            # Equal weights, hide controls
+            equal = 1.0 / max(len(selected_transcripts), 1)
+            weights_fraction = {int(t.id): equal for t in selected_transcripts}
+            sum_ok = True
 
     compute = st.button(
         "Compute keyword metrics",

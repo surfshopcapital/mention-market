@@ -178,7 +178,8 @@ def compute_keyword_stats(
     rows = []
     for kw in cleaned_keywords:
         total_mentions = per_kw_total_mentions.get(kw, 0)
-        avg_mentions = (total_mentions / num_transcripts) if num_transcripts > 0 else 0.0
+        denom = per_kw_transcripts_with_mention.get(kw, 0)
+        avg_mentions = (total_mentions / denom) if denom > 0 else 0.0
         rel_positions = per_kw_relative_positions.get(kw, [])
         avg_rel_pct = (sum(rel_positions) / len(rel_positions) * 100.0) if rel_positions else 0.0
         pct_with_mention = (

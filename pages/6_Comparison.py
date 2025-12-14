@@ -80,6 +80,7 @@ def main() -> None:
 	compare_event = st.session_state.get("compare_event")
 	hist_df: pd.DataFrame | None = st.session_state.get("hist_summary_df")
 	analysis_df: pd.DataFrame | None = st.session_state.get("analysis_keywords_df")
+	pct_left = st.number_input("% game left", min_value=0.0, max_value=100.0, value=100.0, step=1.0)
 
 	if not compare_event:
 		st.info("No event staged for comparison. Go to Mention Markets and check 'Compare' on an event.")
@@ -131,6 +132,9 @@ def main() -> None:
 		df_hist = hist_df.rename(columns={"Strike (word)": "Word", "% said": "% said"}).copy()
 		join = pd.merge(df_event, df_hist[["Word", "% said"]], on="Word", how="inner")
 		target_col = "% said"
+		scale = pct_left / 100.0
+		join["Adj prob (%)"] = join[target_col].astype(float) * float(scale)
+		display_col = "Adj prob (%)"
 	else:
 		# Prepare analysis table with 'Word' and the chosen metric
 		df_ana = analysis_df.copy()
@@ -142,11 +146,17 @@ def main() -> None:
 			st.info("Selected metric not available in analysis output.")
 			return
 		join = pd.merge(df_event, df_ana[["Word", target_col]], on="Word", how="inner")
+		display_col = target_col
+		# Apply % game left only for percentage-like metrics
+		if target_col == "pct_transcripts_with_mention":
+			scale = pct_left / 100.0
+			join["Adj prob (%)"] = join[target_col].astype(float) * float(scale)
+			display_col = "Adj prob (%)"
 
 	if join.empty:
 		st.info("No overlapping words between event strikes and selected comparison table.")
 		return
-	join["Diff (%)"] = (join["Yes Bid (%)"] - join[target_col]).abs()
+	join["Diff (%)"] = (join["Yes Bid (%)"] - join[display_col]).abs()
 	def bucketize(x: float) -> str:
 		if x <= 5.0:
 			return "green"
@@ -159,7 +169,7 @@ def main() -> None:
 	join = join.sort_values(by="Diff (%)", ascending=False)
 
 	st.subheader("Comparison (overlapping words)")
-	cols = ["Word", "Yes Bid (%)", target_col, "Diff (%)", "Diff bucket"]
+	cols = ["Word", "Yes Bid (%)", display_col, "Diff (%)", "Diff bucket"]
 	st.dataframe(_style_diff(join[[c for c in cols if c in join.columns]]), width="stretch", hide_index=True)
 
 
