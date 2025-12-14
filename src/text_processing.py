@@ -322,7 +322,7 @@ def extract_transcripts_from_json(file_bytes: bytes) -> List[Tuple[str, str]]:
                 break
             # Expect object or array or string
             start = i
-            if text[i] in "{[\""]:
+            if text[i] in ("{", "[", '"'):
                 # Track nesting with a simple state machine
                 depth = 0
                 in_string = False
