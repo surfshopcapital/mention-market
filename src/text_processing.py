@@ -232,7 +232,7 @@ def extract_transcripts_from_json(file_bytes: bytes) -> List[Tuple[str, str]]:
       - JSON object with a top-level list under keys like 'transcripts', 'items', 'data'
       - JSON object mapping ids -> text
       - JSON string: treated as a single transcript
-      - JSONL (newline-delimited JSON): each line an object with text fields
+      - JSONL or concatenated JSON: objects may be single-line, multi-line, or pretty-printed back-to-back
     Titles are derived from 'title'/'name'/'id'/'ticker' when available, otherwise a positional label.
     """
     def _derive_text(obj: object) -> Optional[str]:
@@ -241,27 +241,131 @@ def extract_transcripts_from_json(file_bytes: bytes) -> List[Tuple[str, str]]:
         if isinstance(obj, str):
             return obj.strip()
         if isinstance(obj, dict):
-            # Common text field names
-            for k in ("text", "transcript", "content", "body"):
+            # Common text field names (flat)
+            for k in ("text", "transcript", "content", "body", "full_text", "raw_text", "rawText", "transcript_text"):
                 v = obj.get(k)
                 if isinstance(v, str) and v.strip():
                     return v.strip()
-            # Sometimes text is provided as a list of segments
+                if isinstance(v, list):
+                    # Join string lists
+                    items = [str(s or "") for s in v if s is not None]
+                    joined = "\n".join(items).strip()
+                    if joined:
+                        return joined
+            # Segmented text: list of strings or objects with 'text'
             for k in ("segments", "lines", "paragraphs"):
                 segs = obj.get(k)
-                if isinstance(segs, list):
-                    joined = "\n".join([str(s or "") for s in segs]).strip()
+                if isinstance(segs, list) and segs:
+                    parts: List[str] = []
+                    for s in segs:
+                        if isinstance(s, str):
+                            parts.append(s)
+                        elif isinstance(s, dict):
+                            val = s.get("text") or s.get("content") or s.get("body")
+                            if isinstance(val, str):
+                                parts.append(val)
+                    joined = "\n".join([p for p in parts if p]).strip()
+                    if joined:
+                        return joined
+            # Search nested dicts for known keys
+            for nk, nv in obj.items():
+                if isinstance(nv, dict):
+                    nested = _derive_text(nv)
+                    if nested:
+                        return nested
+                if isinstance(nv, list):
+                    # If list of dicts/strings, try to extract text and join
+                    parts: List[str] = []
+                    for it in nv:
+                        t = _derive_text(it)
+                        if t:
+                            parts.append(t)
+                    joined = "\n\n".join(parts).strip()
                     if joined:
                         return joined
         return None
 
     def _derive_title(obj: object, idx: int) -> str:
         if isinstance(obj, dict):
-            for k in ("title", "name", "id", "ticker", "filename"):
+            for k in ("title", "name", "id", "ticker", "filename", "doc_id", "file"):
                 v = obj.get(k)
                 if v is not None:
                     return str(v)[:200]
         return f"item_{idx+1}"
+
+    def _flatten_top_level(data: object) -> List[object]:
+        if isinstance(data, list):
+            return list(data)
+        if isinstance(data, dict):
+            # Prefer obvious collection keys
+            for key in ("transcripts", "items", "data", "records", "docs", "rows", "results"):
+                lst = data.get(key)
+                if isinstance(lst, list):
+                    return list(lst)
+            # Fallback: mapping id -> text/object
+            return [{key: value} for key, value in data.items()]
+        return [data]
+
+    def _stream_parse_entities(text: str) -> List[object]:
+        """
+        Parse concatenated JSON objects/arrays from a stream without separators.
+        Handles pretty-printed multiline JSONL where each entry may span lines.
+        """
+        results: List[object] = []
+        i = 0
+        n = len(text)
+        while i < n:
+            # Skip whitespace
+            while i < n and text[i].isspace():
+                i += 1
+            if i >= n:
+                break
+            # Expect object or array or string
+            start = i
+            if text[i] in "{[\""]:
+                # Track nesting with a simple state machine
+                depth = 0
+                in_string = False
+                escape = False
+                while i < n:
+                    ch = text[i]
+                    if in_string:
+                        if escape:
+                            escape = False
+                        elif ch == "\\":
+                            escape = True
+                        elif ch == "\"":
+                            in_string = False
+                    else:
+                        if ch == "\"":
+                            in_string = True
+                        elif ch in "{[":
+                            depth += 1
+                        elif ch in "}]":
+                            depth -= 1
+                            if depth == 0:
+                                i += 1
+                                chunk = text[start:i]
+                                try:
+                                    results.append(json.loads(chunk))
+                                except Exception:
+                                    pass
+                                break
+                    i += 1
+            else:
+                # Not a valid JSON start; attempt to read until newline and try parse
+                j = text.find("\n", i)
+                if j == -1:
+                    j = n
+                chunk = text[i:j].strip().rstrip(",")
+                i = j + 1
+                if not chunk:
+                    continue
+                try:
+                    results.append(json.loads(chunk))
+                except Exception:
+                    continue
+        return results
 
     # Best-effort UTF-8 decode with fallback
     try:
@@ -276,61 +380,48 @@ def extract_transcripts_from_json(file_bytes: bytes) -> List[Tuple[str, str]]:
     try:
         data = json.loads(text)
         items: List[Tuple[str, str]] = []
-        if isinstance(data, list):
-            for i, entry in enumerate(data):
-                val = _derive_text(entry)
-                if val:
-                    items.append((_derive_title(entry, i), val))
-        elif isinstance(data, dict):
-            # Object with nested list
-            for key in ("transcripts", "items", "data", "records"):
-                lst = data.get(key)
-                if isinstance(lst, list):
-                    for i, entry in enumerate(lst):
-                        val = _derive_text(entry)
-                        if val:
-                            items.append((_derive_title(entry, i), val))
-                    break
-            else:
-                # Mapping id -> text
-                collected = []
-                for k, v in data.items():
-                    val = _derive_text(v) if not isinstance(v, str) else v.strip()
-                    if val:
-                        collected.append((str(k)[:200], val))
-                if collected:
-                    items.extend(collected)
-                # Single-string payload
-                if not items:
-                    lone = _derive_text(data)
-                    if lone:
-                        items.append(("transcript", lone))
-        elif isinstance(data, str):
-            if data.strip():
-                items.append(("transcript", data.strip()))
+        for i, entry in enumerate(_flatten_top_level(data)):
+            val = _derive_text(entry)
+            if val:
+                items.append((_derive_title(entry, i), val))
         if items:
             return items
     except Exception:
         pass
 
-    # 2) Try JSONL (newline-delimited JSON)
-    results: List[Tuple[str, str]] = []
+    # 2) Try streaming parse of concatenated/multiline JSON entities
+    try:
+        entities = _stream_parse_entities(text)
+        results: List[Tuple[str, str]] = []
+        idx = 0
+        for ent in entities:
+            for entry in _flatten_top_level(ent):
+                val = _derive_text(entry)
+                if val:
+                    results.append((_derive_title(entry, idx), val))
+                    idx += 1
+        if results:
+            return results
+    except Exception:
+        pass
+
+    # 3) Fallback: JSONL line-by-line (best-effort, trims trailing commas)
+    results_ll: List[Tuple[str, str]] = []
     for i, line in enumerate(text.splitlines()):
-        s = line.strip()
+        s = line.strip().rstrip(",")
         if not s:
             continue
         try:
             obj = json.loads(s)
-            val = _derive_text(obj)
-            if val:
-                results.append((_derive_title(obj, i), val))
         except Exception:
-            # skip non-JSON lines
             continue
-    if results:
-        return results
+        val = _derive_text(obj)
+        if val:
+            results_ll.append((_derive_title(obj, i), val))
+    if results_ll:
+        return results_ll
 
-    # 3) Fallback: treat entire file as a single transcript
+    # 4) Fallback: treat entire file as a single transcript
     return [("transcript", text)]
 
 
