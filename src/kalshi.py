@@ -641,16 +641,43 @@ class KalshiClient(KalshiHistoryMixin):
     def list_mention_events_window(self, *, months: int = 12) -> List[Dict[str, Any]]:
         """
         BROAD bootstrap fetch: mention-like events within a months window, with nested markets preserved.
-        Includes ALL market statuses; the caller can filter later for 'closed/settled/determined' etc.
-        Intended for preloading and caching to speed up historical searches.
+        Queries ALL historical statuses (closed, settled, determined) to ensure complete coverage.
+        Filters markets by end-time locally for accuracy.
         """
         import pandas as _pd
         earliest_ts = int((_pd.Timestamp.utcnow() - _pd.Timedelta(days=30 * max(months, 1))).timestamp())
-        events = self.list_events_paginated(per_page=100, max_pages=100, with_nested_markets=True, earliest_close_ts=None)
-        results: List[Dict[str, Any]] = []
-        for e in events:
+
+        # Query for EACH historical status separately to ensure complete coverage
+        # The Kalshi API only returns events matching the requested status
+        all_events: List[Dict[str, Any]] = []
+        for status in ["closed", "settled", "determined"]:
+            try:
+                evs = self.list_events_paginated(
+                    per_page=100,
+                    max_pages=100,
+                    with_nested_markets=True,
+                    status_filter=status,
+                    # Don't pass timestamp filters - they filter at event level and miss events
+                    # where event-level timestamp differs from market-level timestamps
+                )
+                if evs:
+                    all_events.extend(evs)
+            except Exception:
+                continue
+
+        # Deduplicate by event_ticker first (same event may appear in multiple status queries)
+        by_evt_raw: Dict[str, Dict[str, Any]] = {}
+        for e in all_events:
             if not isinstance(e, dict):
                 continue
+            t = e.get("event_ticker")
+            if t and t not in by_evt_raw:
+                by_evt_raw[t] = e
+        events = list(by_evt_raw.values())
+
+        # Filter to mention-like events
+        results: List[Dict[str, Any]] = []
+        for e in events:
             title = str(e.get("title", "")).lower()
             series_ticker_l = str(e.get("series_ticker", "")).lower()
             ev_ticker_l = str(e.get("event_ticker", "")).lower()
@@ -673,7 +700,7 @@ class KalshiClient(KalshiHistoryMixin):
                         break
             if not is_mention_event:
                 continue
-            # Keep only markets whose end is within the window (any status)
+            # Keep only markets whose end is within the window (filter locally for accuracy)
             filt: List[Dict[str, Any]] = []
             for m in mkts:
                 t = m.get("close_time") or m.get("end_date") or m.get("expiry_time") or m.get("latest_expiration_time")
@@ -684,7 +711,7 @@ class KalshiClient(KalshiHistoryMixin):
             if not filt:
                 continue
             results.append({**e, "markets": filt})
-        # Deduplicate by event
+        # Final dedup
         by_evt: Dict[str, Dict[str, Any]] = {}
         for e in results:
             t = e.get("event_ticker")
