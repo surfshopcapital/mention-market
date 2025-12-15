@@ -8,7 +8,7 @@ from collections import Counter, defaultdict
 
 from src.kalshi import KalshiClient
 from src.db import get_session, init_db
-from src.storage import get_market_tags_bulk
+from src.storage import add_event_tags, get_event_tags_bulk
 from src.ui_components import inject_dark_theme
 from src.data_cache import get_cached_mention_universe
 
@@ -175,6 +175,16 @@ def main() -> None:
         if not recent_events:
             st.info("No recent closed mention events found.")
             return
+
+        # Preload event tags for these recent events
+        recent_evt_tickers = [str(e.get("event_ticker") or "") for e in recent_events if e.get("event_ticker")]
+        recent_tags_map: dict[str, List[str]] = {}
+        try:
+            with get_session() as sess:
+                recent_tags_map = get_event_tags_bulk(sess, recent_evt_tickers)
+        except Exception:
+            recent_tags_map = {}
+
         # Cards 6 per row
         cols_per_row = 6
         for i in range(0, len(recent_events), cols_per_row):
@@ -220,6 +230,29 @@ def main() -> None:
                         """,
                         unsafe_allow_html=True,
                     )
+                    evt_t = str(e.get("event_ticker") or "")
+                    if evt_t:
+                        existing_tags = recent_tags_map.get(evt_t, [])
+                        if existing_tags:
+                            st.caption("Tags: " + ", ".join(sorted(existing_tags)))
+                        tag_cols = st.columns([2, 1])
+                        with tag_cols[0]:
+                            tag_val = st.text_input(
+                                "Tag",
+                                value="",
+                                key=f"recent_evt_tag_{evt_t}",
+                                label_visibility="collapsed",
+                                placeholder="Add event tag",
+                            )
+                        with tag_cols[1]:
+                            if st.button("Add", key=f"recent_evt_add_{evt_t}", disabled=(not bool(tag_val.strip()))):
+                                try:
+                                    with get_session() as sess:
+                                        add_event_tags(sess, evt_t, [tag_val.strip()])
+                                    st.success("Tag saved")
+                                    st.rerun()
+                                except Exception:
+                                    st.warning("Failed to save tag")
                     # View button for nested markets
                     if st.button("View", key=f"recent_view_{e.get('event_ticker') or i}"):
                         st.session_state["hist_selected_recent_event"] = e.get("event_ticker") or str(i)
@@ -273,12 +306,12 @@ def main() -> None:
     groups = _group_by_event(hist_dicts)
 
 
-    # Bulk tag fetch for first tickers of each group
-    tickers = [g["items"][0].get("ticker") for g in groups if g.get("items")]
+    # Bulk tag fetch for event tickers of each group
+    event_tickers = [str(g.get("event_ticker") or "") for g in groups if g.get("event_ticker")]
     tags_map: dict[str, List[str]] = {}
     try:
         with get_session() as sess:
-            tags_map = get_market_tags_bulk(sess, tickers)
+            tags_map = get_event_tags_bulk(sess, event_tickers)
     except Exception:
         tags_map = {}
 
@@ -286,8 +319,8 @@ def main() -> None:
     if tag_q.strip():
         needle = tag_q.strip().lower()
         def group_has_tag(g: dict) -> bool:
-            first_t = str(g["items"][0].get("ticker"))
-            tags = [t.lower() for t in tags_map.get(first_t, [])]
+            ev_t = str(g.get("event_ticker") or "")
+            tags = [t.lower() for t in tags_map.get(ev_t, [])]
             return any(needle in t for t in tags)
         groups = [g for g in groups if group_has_tag(g)]
 
@@ -343,9 +376,32 @@ def main() -> None:
                     st.session_state["hist_selected_event"] = g.get("event_ticker") or g.get("display_title")
                     st.rerun()
                 # Show tags
-                existing_tags = tags_map.get(str(first_ticker), [])
+                evt_t = str(g.get("event_ticker") or "")
+                existing_tags = tags_map.get(evt_t, [])
                 if existing_tags:
                     st.caption("Tags: " + ", ".join(sorted(existing_tags)))
+                # Add tag control (event-level, multi-tag)
+                if evt_t:
+                    tag_cols = st.columns([2, 1])
+                    with tag_cols[0]:
+                        tag_val = st.text_input(
+                            "Tag",
+                            value="",
+                            key=f"hist_evt_tag_{evt_t}",
+                            label_visibility="collapsed",
+                            placeholder="Add event tag",
+                        )
+                    with tag_cols[1]:
+                        if st.button("Add", key=f"hist_evt_add_{evt_t}", disabled=(not bool(tag_val.strip()))):
+                            try:
+                                with get_session() as sess:
+                                    updated = add_event_tags(sess, evt_t, [tag_val.strip()])
+                                # Update local tags map so UI reflects immediately on rerun
+                                tags_map[evt_t] = sorted(list({*(tags_map.get(evt_t, []) or []), *updated}))
+                                st.success("Tag saved")
+                                st.rerun()
+                            except Exception:
+                                st.warning("Failed to save tag")
                 sel = st.session_state.get("hist_selected_event")
                 if sel and sel == (g.get("event_ticker") or g.get("display_title")):
                     selected_group_in_row = g

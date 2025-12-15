@@ -5,7 +5,7 @@ from typing import Iterable, List, Optional, Sequence
 from sqlalchemy import asc, desc, select
 from sqlalchemy.orm import Session
 
-from .models import MarketTag, Tag, Transcript, TradeEntry, transcript_tag_association
+from .models import EventTag, MarketTag, StrategyNote, Tag, Transcript, TradeEntry, transcript_tag_association
 from datetime import datetime
 
 
@@ -139,6 +139,71 @@ def get_market_tags_bulk(session: Session, tickers: Sequence[str]) -> dict[str, 
     for k in list(mapping.keys()):
         mapping[k] = sorted(list({*mapping.get(k, [])}))
     return mapping
+
+
+# Event tagging helpers (multi-tag per event)
+def get_event_tags(session: Session, event_ticker: str) -> List[str]:
+    rows = session.scalars(select(EventTag).where(EventTag.event_ticker == event_ticker)).all()
+    return [r.tag for r in rows]
+
+
+def add_event_tags(session: Session, event_ticker: str, tag_names: Sequence[str]) -> List[str]:
+    clean = sorted({(t or "").strip() for t in tag_names if t and (t or "").strip()})
+    if not clean:
+        return get_event_tags(session, event_ticker)
+    existing = session.scalars(select(EventTag).where(EventTag.event_ticker == event_ticker)).all()
+    existing_set = {r.tag for r in existing}
+    to_add = [t for t in clean if t not in existing_set]
+    for tag in to_add:
+        session.add(EventTag(event_ticker=event_ticker, tag=tag))
+    session.flush()
+    return get_event_tags(session, event_ticker)
+
+
+def get_event_tags_bulk(session: Session, event_tickers: Sequence[str]) -> dict[str, List[str]]:
+    """
+    Fetch tags for many event tickers in a single query.
+    """
+    tickers_clean = sorted({str(t) for t in event_tickers if t})
+    if not tickers_clean:
+        return {}
+    rows = session.scalars(select(EventTag).where(EventTag.event_ticker.in_(tickers_clean))).all()
+    mapping: dict[str, List[str]] = {t: [] for t in tickers_clean}
+    for r in rows:
+        mapping.setdefault(r.event_ticker, []).append(r.tag)
+    for k in list(mapping.keys()):
+        mapping[k] = sorted(list({*mapping.get(k, [])}))
+    return mapping
+
+
+# Strategy notebooks (persistent notes)
+def get_strategy_note(session: Session, key: str) -> str:
+    k = (key or "").strip()
+    if not k:
+        return ""
+    row = session.scalars(select(StrategyNote).where(StrategyNote.key == k)).first()
+    return str(row.content) if row else ""
+
+
+def upsert_strategy_note(session: Session, *, key: str, content: str) -> None:
+    k = (key or "").strip()
+    if not k:
+        return
+    row = session.scalars(select(StrategyNote).where(StrategyNote.key == k)).first()
+    if row:
+        row.content = content or ""
+        row.updated_at = datetime.utcnow()
+        session.add(row)
+        return
+    session.add(StrategyNote(key=k, content=content or "", updated_at=datetime.utcnow()))
+
+
+def get_all_strategy_notes(session: Session) -> dict[str, str]:
+    rows = session.scalars(select(StrategyNote)).all()
+    out: dict[str, str] = {}
+    for r in rows:
+        out[str(r.key)] = str(r.content or "")
+    return out
 
 
 # Trade journal helpers

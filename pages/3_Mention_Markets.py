@@ -10,7 +10,7 @@ from collections import Counter, defaultdict
 from src.kalshi import KalshiClient
 from src.config import get_kalshi_api_base_url
 from src.db import get_session, init_db
-from src.storage import add_market_tags, get_market_tags, get_market_tags_bulk
+from src.storage import add_event_tags, get_event_tags_bulk
 from src.ui_components import inject_dark_theme
 from src.data_cache import get_cached_mention_universe
 
@@ -288,8 +288,8 @@ def main() -> None:
                     if len(groups) == 0 and total_events > 0:
                         st.warning("No event cards after grouping. Likely cause: all events have <=1 strike and are filtered out by the UI rule (require >1).")
 
-            # Preload tags for all first tickers (single DB roundtrip, cached in session for 5 minutes)
-            tickers_for_tags: list[str] = [g["items"][0].get("ticker") for g in groups if g.get("items")]
+            # Preload tags for all event tickers (single DB roundtrip, cached in session for 5 minutes)
+            event_tickers_for_tags: list[str] = [str(g.get("event_ticker") or "") for g in groups if g.get("event_ticker")]
             need_reload_tags = False
             now_ms = int(pd.Timestamp.utcnow().timestamp() * 1000)
             if st.session_state.get("mm_tags_loaded_at_ms") is None:
@@ -300,7 +300,7 @@ def main() -> None:
             if need_reload_tags:
                 try:
                     with get_session() as sess:
-                        tags_map = get_market_tags_bulk(sess, tickers_for_tags)
+                        tags_map = get_event_tags_bulk(sess, event_tickers_for_tags)
                     st.session_state["mm_tags_map"] = tags_map
                     st.session_state["mm_tags_loaded_at_ms"] = now_ms
                 except Exception:
@@ -360,7 +360,8 @@ def main() -> None:
                         # Controls row: [View Strikes] [Add tag] [tag input]
                         # Stable group key based on first ticker (fallback to index + title)
                         first_ticker = g["items"][0].get("ticker") if g["items"] else ""
-                        group_key = (first_ticker or g.get("event_ticker") or f"{i}_{abs(hash(g.get('display_title', '')))}").replace(" ", "_")
+                        evt_ticker = str(g.get("event_ticker") or "")
+                        group_key = (first_ticker or evt_ticker or f"{i}_{abs(hash(g.get('display_title', '')))}").replace(" ", "_")
                         ctrl_cols = st.columns([1, 1, 1, 2])
                         with ctrl_cols[0]:
                             if st.button("View strikes", key=f"view_{group_key}"):
@@ -368,7 +369,7 @@ def main() -> None:
                                 st.session_state["mm_scrolled"] = False
                                 st.rerun()
                         with ctrl_cols[1]:
-                            apply = st.button("Add tag", key=f"add_tag_{group_key}", disabled=(not first_ticker))
+                            apply = st.button("Add tag", key=f"add_tag_{group_key}", disabled=(not evt_ticker))
                         with ctrl_cols[2]:
                             # Stage for comparison page
                             if st.checkbox("Compare", key=f"compare_{group_key}"):
@@ -384,11 +385,11 @@ def main() -> None:
                             )
 
                         # Tag persistence (after controls for layout)
-                        existing_tags = list((st.session_state.get("mm_tags_map") or {}).get(str(first_ticker), []))
-                        if apply and tag_val.strip() and first_ticker:
+                        existing_tags = list((st.session_state.get("mm_tags_map") or {}).get(evt_ticker, []))
+                        if apply and tag_val.strip() and evt_ticker:
                             try:
                                 with get_session() as sess:
-                                    updated = add_market_tags(sess, str(first_ticker), [tag_val.strip()])
+                                    updated = add_event_tags(sess, evt_ticker, [tag_val.strip()])
                                 existing_tags = updated
                                 st.session_state[f"tags_{group_key}"] = updated
                                 st.session_state[f"tag_{group_key}"] = ""  # clear input
@@ -397,10 +398,10 @@ def main() -> None:
                                 st.warning("Failed to save tag.")
                             # Update in-memory tags map immediately so UI does not wait for refetch
                             current_map = st.session_state.get("mm_tags_map") or {}
-                            cur_list = list(current_map.get(str(first_ticker), []))
+                            cur_list = list(current_map.get(evt_ticker, []))
                             if tag_val.strip() not in cur_list:
                                 cur_list.append(tag_val.strip())
-                            current_map[str(first_ticker)] = sorted(cur_list)
+                            current_map[evt_ticker] = sorted(cur_list)
                             st.session_state["mm_tags_map"] = current_map
                             st.session_state["mm_tags_loaded_at_ms"] = now_ms
                         if st.session_state.get(f"tags_{group_key}"):

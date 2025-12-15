@@ -4,15 +4,40 @@ import json
 import streamlit as st
 
 from src.ui_components import inject_dark_theme
-from src.db import init_db
+from src.db import get_session, init_db
+from src.storage import get_strategy_note, upsert_strategy_note
 
 
 def _get_note(key: str) -> str:
 	val = st.session_state.get(key)
 	return str(val) if val is not None else ""
 
+def _load_notes_from_db() -> None:
+	# Initialize session state from DB exactly once per app session
+	if st.session_state.get("_notebooks_loaded"):
+		return
+	try:
+		with get_session() as sess:
+			st.session_state["notepad_strategies"] = get_strategy_note(sess, "strategies")
+			st.session_state["notepad_event_rules"] = get_strategy_note(sess, "event_rules")
+			st.session_state["notepad_vertical_rules"] = get_strategy_note(sess, "vertical_rules")
+			st.session_state["notepad_changelog"] = get_strategy_note(sess, "changelog")
+	except Exception:
+		# If DB is unavailable, fall back to empty session notes
+		pass
+	st.session_state["_notebooks_loaded"] = True
 
-def _render_notepad(title: str, key: str, *, accent: str = "#22d3ee", placeholder: str = "") -> None:
+
+def _save_note_to_db(note_key: str, db_key: str) -> None:
+	try:
+		with get_session() as sess:
+			upsert_strategy_note(sess, key=db_key, content=_get_note(note_key))
+	except Exception:
+		# Avoid hard-failing the UI on transient DB errors
+		return
+
+
+def _render_notepad(title: str, key: str, *, accent: str = "#22d3ee", placeholder: str = "", db_key: str) -> None:
 	st.markdown(
 		f"""
 		<div style="background:#0c1324;border:1px solid #1f2937;border-radius:14px;padding:12px;">
@@ -37,11 +62,17 @@ def _render_notepad(title: str, key: str, *, accent: str = "#22d3ee", placeholde
 			height=220,
 			label_visibility="collapsed",
 			placeholder=placeholder,
+			on_change=_save_note_to_db,
+			args=(key, db_key),
 		)
 	with col2:
-		# Controls: Clear, Download
+		# Controls: Save, Clear, Download
+		if st.button("Save", key=f"save_{key}", type="primary"):
+			_save_note_to_db(key, db_key)
+			st.success("Saved.")
 		if st.button("Clear", key=f"clear_{key}", type="secondary"):
 			st.session_state[key] = ""
+			_save_note_to_db(key, db_key)
 			st.rerun()
 		st.download_button(
 			"Download",
@@ -57,11 +88,13 @@ def main() -> None:
 	try:
 		init_db()
 	except Exception:
-		# Notes are session-based; DB is optional here
+		# Notes can still run in session-only mode if DB is unavailable
 		pass
 
 	st.title("Strategy Notebooks")
 	st.caption("Four focused notepads to capture ideas, rules, and changes.")
+
+	_load_notes_from_db()
 
 	with st.expander("Backup / Restore", expanded=False):
 		col_b1, col_b2 = st.columns([1, 2])
@@ -86,12 +119,16 @@ def main() -> None:
 					if isinstance(data, dict):
 						if "strategies" in data:
 							st.session_state["notepad_strategies"] = str(data.get("strategies") or "")
+							_save_note_to_db("notepad_strategies", "strategies")
 						if "event_rules" in data:
 							st.session_state["notepad_event_rules"] = str(data.get("event_rules") or "")
+							_save_note_to_db("notepad_event_rules", "event_rules")
 						if "vertical_rules" in data:
 							st.session_state["notepad_vertical_rules"] = str(data.get("vertical_rules") or "")
+							_save_note_to_db("notepad_vertical_rules", "vertical_rules")
 						if "changelog" in data:
 							st.session_state["notepad_changelog"] = str(data.get("changelog") or "")
+							_save_note_to_db("notepad_changelog", "changelog")
 						st.success("Notes restored.")
 						st.rerun()
 				except Exception as e:
@@ -107,6 +144,7 @@ def main() -> None:
 			"notepad_strategies",
 			accent="#60a5fa",
 			placeholder="Alpha ideas, setups, context, execution checklists...",
+			db_key="strategies",
 		)
 	with row1[1]:
 		_render_notepad(
@@ -114,6 +152,7 @@ def main() -> None:
 			"notepad_event_rules",
 			accent="#34d399",
 			placeholder="Catalyst playbook, quirks, wording gotchas, event-specific tactics...",
+			db_key="event_rules",
 		)
 	st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
 	row2 = st.columns(2)
@@ -123,6 +162,7 @@ def main() -> None:
 			"notepad_vertical_rules",
 			accent="#fbbf24",
 			placeholder="Strike selection, structure preferences, skew habits, hedging rules...",
+			db_key="vertical_rules",
 		)
 	with row2[1]:
 		_render_notepad(
@@ -130,6 +170,7 @@ def main() -> None:
 			"notepad_changelog",
 			accent="#f87171",
 			placeholder="What changed, why, and learnings to carry forward...",
+			db_key="changelog",
 		)
 
 
