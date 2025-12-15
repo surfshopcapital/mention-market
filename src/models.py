@@ -83,6 +83,21 @@ class StrategyNote(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
 
+class StrategyNoteKV(Base):
+    """
+    Persistent key/value store for the Strategy Notebooks page.
+    Uses a non-reserved column name for portability across DBs.
+    """
+
+    __tablename__ = "strategy_notes_kv"
+    __table_args__ = (UniqueConstraint("note_key", name="uq_strategy_note_note_key"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    note_key: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class TradeEntry(Base):
     __tablename__ = "trade_entries"
     __table_args__ = (UniqueConstraint("market_ticker", name="uq_trade_market"),)

@@ -13,28 +13,32 @@ def _get_note(key: str) -> str:
 	return str(val) if val is not None else ""
 
 def _load_notes_from_db() -> None:
-	# Initialize session state from DB exactly once per app session
-	if st.session_state.get("_notebooks_loaded"):
-		return
+	# Hydrate session state from DB if the fields are missing/empty.
+	# This prevents overwriting what the user is actively typing.
 	try:
 		with get_session() as sess:
-			st.session_state["notepad_strategies"] = get_strategy_note(sess, "strategies")
-			st.session_state["notepad_event_rules"] = get_strategy_note(sess, "event_rules")
-			st.session_state["notepad_vertical_rules"] = get_strategy_note(sess, "vertical_rules")
-			st.session_state["notepad_changelog"] = get_strategy_note(sess, "changelog")
-	except Exception:
-		# If DB is unavailable, fall back to empty session notes
-		pass
-	st.session_state["_notebooks_loaded"] = True
+			mapping = {
+				"notepad_strategies": "strategies",
+				"notepad_event_rules": "event_rules",
+				"notepad_vertical_rules": "vertical_rules",
+				"notepad_changelog": "changelog",
+			}
+			for sk, dbk in mapping.items():
+				if sk not in st.session_state or st.session_state.get(sk) in (None, ""):
+					st.session_state[sk] = get_strategy_note(sess, dbk)
+	except Exception as e:
+		st.session_state["notebooks_db_error"] = str(e)
 
 
 def _save_note_to_db(note_key: str, db_key: str) -> None:
 	try:
 		with get_session() as sess:
 			upsert_strategy_note(sess, key=db_key, content=_get_note(note_key))
+		st.session_state["notebooks_db_error"] = ""
 	except Exception:
-		# Avoid hard-failing the UI on transient DB errors
-		return
+		# Surface errors (don't silently claim "saved")
+		import traceback as _tb
+		st.session_state["notebooks_db_error"] = _tb.format_exc()
 
 
 def _render_notepad(title: str, key: str, *, accent: str = "#22d3ee", placeholder: str = "", db_key: str) -> None:
@@ -69,7 +73,10 @@ def _render_notepad(title: str, key: str, *, accent: str = "#22d3ee", placeholde
 		# Controls: Save, Clear, Download
 		if st.button("Save", key=f"save_{key}", type="primary"):
 			_save_note_to_db(key, db_key)
-			st.success("Saved.")
+			if st.session_state.get("notebooks_db_error"):
+				st.error("Save failed (see DB error above).")
+			else:
+				st.success("Saved.")
 		if st.button("Clear", key=f"clear_{key}", type="secondary"):
 			st.session_state[key] = ""
 			_save_note_to_db(key, db_key)
@@ -85,16 +92,15 @@ def _render_notepad(title: str, key: str, *, accent: str = "#22d3ee", placeholde
 def main() -> None:
 	st.set_page_config(page_title="Strategy Notebooks", page_icon="📝", layout="wide")
 	inject_dark_theme()
-	try:
-		init_db()
-	except Exception:
-		# Notes can still run in session-only mode if DB is unavailable
-		pass
+	init_db()
 
 	st.title("Strategy Notebooks")
 	st.caption("Four focused notepads to capture ideas, rules, and changes.")
 
 	_load_notes_from_db()
+	if st.session_state.get("notebooks_db_error"):
+		with st.expander("DB error (notes may not persist)", expanded=True):
+			st.code(str(st.session_state.get("notebooks_db_error")), language="text")
 
 	with st.expander("Backup / Restore", expanded=False):
 		col_b1, col_b2 = st.columns([1, 2])

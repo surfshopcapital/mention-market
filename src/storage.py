@@ -5,7 +5,7 @@ from typing import Iterable, List, Optional, Sequence
 from sqlalchemy import asc, delete, desc, select
 from sqlalchemy.orm import Session
 
-from .models import EventTag, MarketTag, StrategyNote, Tag, Transcript, TradeEntry, transcript_tag_association
+from .models import EventTag, MarketTag, StrategyNoteKV, StrategyNote, Tag, Transcript, TradeEntry, transcript_tag_association
 from datetime import datetime
 
 
@@ -192,7 +192,8 @@ def get_strategy_note(session: Session, key: str) -> str:
     k = (key or "").strip()
     if not k:
         return ""
-    row = session.scalars(select(StrategyNote).where(StrategyNote.key == k)).first()
+    # Use the KV table (portable across DBs)
+    row = session.scalars(select(StrategyNoteKV).where(StrategyNoteKV.note_key == k)).first()
     return str(row.content) if row else ""
 
 
@@ -200,20 +201,20 @@ def upsert_strategy_note(session: Session, *, key: str, content: str) -> None:
     k = (key or "").strip()
     if not k:
         return
-    row = session.scalars(select(StrategyNote).where(StrategyNote.key == k)).first()
+    row = session.scalars(select(StrategyNoteKV).where(StrategyNoteKV.note_key == k)).first()
     if row:
         row.content = content or ""
         row.updated_at = datetime.utcnow()
         session.add(row)
         return
-    session.add(StrategyNote(key=k, content=content or "", updated_at=datetime.utcnow()))
+    session.add(StrategyNoteKV(note_key=k, content=content or "", updated_at=datetime.utcnow()))
 
 
 def get_all_strategy_notes(session: Session) -> dict[str, str]:
-    rows = session.scalars(select(StrategyNote)).all()
+    rows = session.scalars(select(StrategyNoteKV)).all()
     out: dict[str, str] = {}
     for r in rows:
-        out[str(r.key)] = str(r.content or "")
+        out[str(r.note_key)] = str(r.content or "")
     return out
 
 
