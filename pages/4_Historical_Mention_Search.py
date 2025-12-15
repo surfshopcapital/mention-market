@@ -139,15 +139,20 @@ def main() -> None:
 
     # Bulk actions (checked cards) — applies to whichever set of cards is currently shown
     st.markdown("### Bulk actions")
-    bulk_cols = st.columns([2, 1, 1, 1])
-    with bulk_cols[0]:
+    row1 = st.columns([2, 1, 1, 1])
+    with row1[0]:
         bulk_raw = st.text_input("Bulk tag (comma-separated)", value="", key="hist_bulk_tag")
-    with bulk_cols[1]:
+    with row1[1]:
         filter_checked = st.checkbox("Filter by checked cards", value=False, key="hist_filter_checked")
-    with bulk_cols[2]:
-        add_bulk = st.button("Add tags", key="hist_bulk_add", type="primary")
-    with bulk_cols[3]:
-        remove_bulk_btn = st.button("Remove tags", key="hist_bulk_remove", type="secondary")
+    with row1[2]:
+        select_all = st.button("Select all on page", key="hist_select_all")
+    with row1[3]:
+        clear_all = st.button("Clear all on page", key="hist_clear_all", type="secondary")
+    row2 = st.columns([1, 1])
+    with row2[0]:
+        add_bulk = st.button("Add tags to checked", key="hist_bulk_add", type="primary")
+    with row2[1]:
+        remove_bulk_btn = st.button("Remove tags from checked", key="hist_bulk_remove", type="secondary")
 
     bulk_tags = [t.strip() for t in (bulk_raw or "").split(",") if t.strip()]
 
@@ -202,6 +207,16 @@ def main() -> None:
         # Bulk ops for recent events
         def _recent_checked(evt: str) -> bool:
             return bool(st.session_state.get(f"hist_checked_{evt}"))
+
+        # Apply select/clear all on current page list
+        if select_all and recent_evt_tickers:
+            for evt in recent_evt_tickers:
+                st.session_state[f"hist_checked_{evt}"] = True
+            st.rerun()
+        if clear_all and recent_evt_tickers:
+            for evt in recent_evt_tickers:
+                st.session_state[f"hist_checked_{evt}"] = False
+            st.rerun()
 
         checked_recent = [evt for evt in recent_evt_tickers if evt and _recent_checked(evt)]
         if add_bulk or remove_bulk_btn:
@@ -278,13 +293,20 @@ def main() -> None:
                         unsafe_allow_html=True,
                     )
                     evt_t = str(e.get("event_ticker") or "")
+                    # Compact controls row
+                    ctrl = st.columns([1, 1])
+                    with ctrl[0]:
+                        if st.button("View", key=f"recent_view_{e.get('event_ticker') or i}"):
+                            st.session_state["hist_selected_recent_event"] = e.get("event_ticker") or str(i)
+                    with ctrl[1]:
+                        if evt_t:
+                            st.checkbox("Checked", key=f"hist_checked_{evt_t}", value=bool(st.session_state.get(f"hist_checked_{evt_t}", False)))
+
                     if evt_t:
-                        st.checkbox("Checked", key=f"hist_checked_{evt_t}", value=bool(st.session_state.get(f"hist_checked_{evt_t}", False)))
                         existing_tags = recent_tags_map.get(evt_t, [])
                         if existing_tags:
                             st.caption("Tags: " + ", ".join(sorted(existing_tags)))
-                        tag_cols = st.columns([2, 1])
-                        with tag_cols[0]:
+                        with st.expander("Tags", expanded=False):
                             tag_val = st.text_input(
                                 "Tag",
                                 value="",
@@ -292,8 +314,7 @@ def main() -> None:
                                 label_visibility="collapsed",
                                 placeholder="Add event tag",
                             )
-                        with tag_cols[1]:
-                            if st.button("Add", key=f"recent_evt_add_{evt_t}", disabled=(not bool(tag_val.strip()))):
+                            if st.button("Add tag", key=f"recent_evt_add_{evt_t}", disabled=(not bool(tag_val.strip()))):
                                 try:
                                     with get_session() as sess:
                                         add_event_tags(sess, evt_t, [tag_val.strip()])
@@ -301,9 +322,6 @@ def main() -> None:
                                     st.rerun()
                                 except Exception:
                                     st.warning("Failed to save tag")
-                    # View button for nested markets
-                    if st.button("View", key=f"recent_view_{e.get('event_ticker') or i}"):
-                        st.session_state["hist_selected_recent_event"] = e.get("event_ticker") or str(i)
         # If a recent event is selected, render nested markets table
         sel_evt = st.session_state.get("hist_selected_recent_event")
         if sel_evt:
@@ -375,6 +393,16 @@ def main() -> None:
     # Bulk ops for search results groups
     def _checked(evt: str) -> bool:
         return bool(st.session_state.get(f"hist_checked_{evt}"))
+
+    # Apply select/clear all on current page list
+    if select_all and event_tickers:
+        for evt in event_tickers:
+            st.session_state[f"hist_checked_{evt}"] = True
+        st.rerun()
+    if clear_all and event_tickers:
+        for evt in event_tickers:
+            st.session_state[f"hist_checked_{evt}"] = False
+        st.rerun()
 
     checked_groups = [evt for evt in event_tickers if evt and _checked(evt)]
     if add_bulk or remove_bulk_btn:
@@ -453,20 +481,23 @@ def main() -> None:
                 )
                 first_ticker = g["items"][0].get("ticker") if g["items"] else ""
                 group_key = (first_ticker or g.get("event_ticker") or f"{i}_{abs(hash(g.get('display_title', '')))}").replace(" ", "_")
-                if st.button("View", key=f"hist_view_{group_key}"):
-                    st.session_state["hist_selected_event"] = g.get("event_ticker") or g.get("display_title")
-                    st.rerun()
-                # Show tags
                 evt_t = str(g.get("event_ticker") or "")
+                # Compact controls row
+                ctrl = st.columns([1, 1])
+                with ctrl[0]:
+                    if st.button("View", key=f"hist_view_{group_key}"):
+                        st.session_state["hist_selected_event"] = g.get("event_ticker") or g.get("display_title")
+                        st.rerun()
+                with ctrl[1]:
+                    if evt_t:
+                        st.checkbox("Checked", key=f"hist_checked_{evt_t}", value=bool(st.session_state.get(f"hist_checked_{evt_t}", False)))
+
+                # Show tags (collapsed editor to reduce clutter)
                 existing_tags = tags_map.get(evt_t, [])
                 if existing_tags:
                     st.caption("Tags: " + ", ".join(sorted(existing_tags)))
                 if evt_t:
-                    st.checkbox("Checked", key=f"hist_checked_{evt_t}", value=bool(st.session_state.get(f"hist_checked_{evt_t}", False)))
-                # Add tag control (event-level, multi-tag)
-                if evt_t:
-                    tag_cols = st.columns([2, 1])
-                    with tag_cols[0]:
+                    with st.expander("Tags", expanded=False):
                         tag_val = st.text_input(
                             "Tag",
                             value="",
@@ -474,12 +505,10 @@ def main() -> None:
                             label_visibility="collapsed",
                             placeholder="Add event tag",
                         )
-                    with tag_cols[1]:
-                        if st.button("Add", key=f"hist_evt_add_{evt_t}", disabled=(not bool(tag_val.strip()))):
+                        if st.button("Add tag", key=f"hist_evt_add_{evt_t}", disabled=(not bool(tag_val.strip()))):
                             try:
                                 with get_session() as sess:
                                     updated = add_event_tags(sess, evt_t, [tag_val.strip()])
-                                # Update local tags map so UI reflects immediately on rerun
                                 tags_map[evt_t] = sorted(list({*(tags_map.get(evt_t, []) or []), *updated}))
                                 st.success("Tag saved")
                                 st.rerun()

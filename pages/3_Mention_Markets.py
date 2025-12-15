@@ -309,18 +309,33 @@ def main() -> None:
 
             # Bulk actions (checked cards)
             st.markdown("### Bulk actions")
-            bulk_cols = st.columns([2, 1, 1, 1])
-            with bulk_cols[0]:
+            row1 = st.columns([2, 1, 1, 1])
+            with row1[0]:
                 bulk_raw = st.text_input("Bulk tag (comma-separated)", value="", key="mm_bulk_tag")
-            with bulk_cols[1]:
+            with row1[1]:
                 filter_checked = st.checkbox("Filter by checked cards", value=False, key="mm_filter_checked")
-            with bulk_cols[2]:
-                add_bulk = st.button("Add tags", key="mm_bulk_add", type="primary")
-            with bulk_cols[3]:
-                remove_bulk = st.button("Remove tags", key="mm_bulk_remove", type="secondary")
+            with row1[2]:
+                select_all = st.button("Select all on page", key="mm_select_all")
+            with row1[3]:
+                clear_all = st.button("Clear all on page", key="mm_clear_all", type="secondary")
+            row2 = st.columns([1, 1])
+            with row2[0]:
+                add_bulk = st.button("Add tags to checked", key="mm_bulk_add", type="primary")
+            with row2[1]:
+                remove_bulk = st.button("Remove tags from checked", key="mm_bulk_remove", type="secondary")
 
             def _is_checked(evt: str) -> bool:
                 return bool(st.session_state.get(f"mm_checked_{evt}"))
+
+            visible_evts = [str(g.get("event_ticker") or "") for g in groups if str(g.get("event_ticker") or "")]
+            if select_all and visible_evts:
+                for evt in visible_evts:
+                    st.session_state[f"mm_checked_{evt}"] = True
+                st.rerun()
+            if clear_all and visible_evts:
+                for evt in visible_evts:
+                    st.session_state[f"mm_checked_{evt}"] = False
+                st.rerun()
 
             checked_evts = [
                 str(g.get("event_ticker") or "")
@@ -403,27 +418,33 @@ def main() -> None:
                             unsafe_allow_html=True,
                         )
 
-                        # Controls row: [View Strikes] [Add tag] [tag input]
                         # Stable group key based on first ticker (fallback to index + title)
                         first_ticker = g["items"][0].get("ticker") if g["items"] else ""
                         evt_ticker = str(g.get("event_ticker") or "")
                         group_key = (first_ticker or evt_ticker or f"{i}_{abs(hash(g.get('display_title', '')))}").replace(" ", "_")
-                        ctrl_cols = st.columns([1, 1, 1, 1, 2])
-                        with ctrl_cols[0]:
-                            if st.button("View strikes", key=f"view_{group_key}"):
+
+                        # Compact controls row (kept visually close to the card)
+                        ctrl = st.columns([1, 1, 1])
+                        with ctrl[0]:
+                            if st.button("View", key=f"view_{group_key}"):
                                 st.session_state["mm_selected_event"] = g.get("event_ticker") or g.get("display_title")
                                 st.session_state["mm_scrolled"] = False
                                 st.rerun()
-                        with ctrl_cols[1]:
-                            apply = st.button("Add tag", key=f"add_tag_{group_key}", disabled=(not evt_ticker))
-                        with ctrl_cols[2]:
-                            # Stage for comparison page
+                        with ctrl[1]:
                             if st.checkbox("Compare", key=f"compare_{group_key}"):
                                 st.session_state["compare_event"] = g
-                                st.success("Event staged for comparison. Open the Comparison page.")
-                        with ctrl_cols[3]:
-                            st.checkbox("Checked", key=f"mm_checked_{evt_ticker}", value=bool(st.session_state.get(f"mm_checked_{evt_ticker}", False)))
-                        with ctrl_cols[4]:
+                        with ctrl[2]:
+                            st.checkbox(
+                                "Checked",
+                                key=f"mm_checked_{evt_ticker}",
+                                value=bool(st.session_state.get(f"mm_checked_{evt_ticker}", False)),
+                            )
+
+                        # Tags (collapsed to reduce clutter)
+                        existing_tags = list((st.session_state.get("mm_tags_map") or {}).get(evt_ticker, []))
+                        if existing_tags:
+                            st.caption("Tags: " + ", ".join(sorted(existing_tags)))
+                        with st.expander("Tags", expanded=False):
                             tag_val = st.text_input(
                                 "Tag",
                                 value="",
@@ -431,31 +452,15 @@ def main() -> None:
                                 label_visibility="collapsed",
                                 placeholder="Add tag",
                             )
-
-                        # Tag persistence (after controls for layout)
-                        existing_tags = list((st.session_state.get("mm_tags_map") or {}).get(evt_ticker, []))
-                        if apply and tag_val.strip() and evt_ticker:
-                            try:
-                                with get_session() as sess:
-                                    updated = add_event_tags(sess, evt_ticker, [tag_val.strip()])
-                                existing_tags = updated
-                                st.session_state[f"tags_{group_key}"] = updated
-                                st.session_state[f"tag_{group_key}"] = ""  # clear input
-                                st.success("Tag saved")
-                            except Exception:
-                                st.warning("Failed to save tag.")
-                            # Update in-memory tags map immediately so UI does not wait for refetch
-                            current_map = st.session_state.get("mm_tags_map") or {}
-                            cur_list = list(current_map.get(evt_ticker, []))
-                            if tag_val.strip() not in cur_list:
-                                cur_list.append(tag_val.strip())
-                            current_map[evt_ticker] = sorted(cur_list)
-                            st.session_state["mm_tags_map"] = current_map
-                            st.session_state["mm_tags_loaded_at_ms"] = now_ms
-                        if st.session_state.get(f"tags_{group_key}"):
-                            existing_tags = st.session_state[f"tags_{group_key}"]
-                        if existing_tags:
-                            st.caption("Tags: " + ", ".join(sorted(existing_tags)))
+                            if st.button("Add tag", key=f"add_tag_{group_key}", disabled=((not evt_ticker) or (not bool(tag_val.strip())))):
+                                try:
+                                    with get_session() as sess:
+                                        updated = add_event_tags(sess, evt_ticker, [tag_val.strip()])
+                                    st.session_state["mm_tags_loaded_at_ms"] = None
+                                    st.success("Tag saved")
+                                    st.rerun()
+                                except Exception:
+                                    st.warning("Failed to save tag.")
 
                         # Mark if this group is selected; table will render full width below the row
                         sel_key = st.session_state.get("mm_selected_event")
