@@ -641,29 +641,40 @@ class KalshiClient(KalshiHistoryMixin):
     def list_mention_events_window(self, *, months: int = 12) -> List[Dict[str, Any]]:
         """
         BROAD bootstrap fetch: mention-like events within a months window, with nested markets preserved.
-        Queries ALL historical statuses (closed, settled, determined) to ensure complete coverage.
+        Queries historical statuses (closed, settled, determined) scoped to mention-like series tickers
+        to ensure complete coverage without needing to page through all Kalshi events.
         Filters markets by end-time locally for accuracy.
         """
         import pandas as _pd
         earliest_ts = int((_pd.Timestamp.utcnow() - _pd.Timedelta(days=30 * max(months, 1))).timestamp())
 
-        # Query for EACH historical status separately to ensure complete coverage
-        # The Kalshi API only returns events matching the requested status
+        # Filter-first: discover mention-like series tickers, then fetch events only within those series.
+        # This avoids paging through the entire events corpus (which can truncate older mention events).
+        try:
+            series_tickers = self.find_mention_series_tickers()
+        except Exception:
+            series_tickers = []
+
+        # Query for EACH historical status separately to ensure complete coverage.
+        # The Kalshi API only returns events matching the requested status.
         all_events: List[Dict[str, Any]] = []
         for status in ["closed", "settled", "determined"]:
-            try:
-                evs = self.list_events_paginated(
-                    per_page=100,
-                    max_pages=100,
-                    with_nested_markets=True,
-                    status_filter=status,
-                    # Don't pass timestamp filters - they filter at event level and miss events
-                    # where event-level timestamp differs from market-level timestamps
-                )
-                if evs:
-                    all_events.extend(evs)
-            except Exception:
-                continue
+            # If we failed to discover series tickers, fall back to a global fetch (slower).
+            targets = series_tickers if series_tickers else [None]
+            for stkr in targets:
+                try:
+                    evs = self.list_events_paginated(
+                        series_ticker=stkr,
+                        per_page=200,
+                        max_pages=500,
+                        with_nested_markets=True,
+                        status_filter=status,
+                        # Avoid event-level time filters here; we filter market end-times locally below.
+                    )
+                    if evs:
+                        all_events.extend(evs)
+                except Exception:
+                    continue
 
         # Deduplicate by event_ticker first (same event may appear in multiple status queries)
         by_evt_raw: Dict[str, Dict[str, Any]] = {}
