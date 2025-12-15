@@ -130,7 +130,12 @@ def main() -> None:
 
 	if source == "Historical Strike Summary":
 		df_hist = hist_df.rename(columns={"Strike (word)": "Word", "% said": "% said"}).copy()
-		join = pd.merge(df_event, df_hist[["Word", "% said"]], on="Word", how="inner")
+		# Carry through extra context columns when present
+		hcols = ["Word", "% said"]
+		for extra in ["Times said", "Events possible"]:
+			if extra in df_hist.columns:
+				hcols.append(extra)
+		join = pd.merge(df_event, df_hist[hcols], on="Word", how="inner")
 		target_col = "% said"
 		scale = pct_left / 100.0
 		join["Adj prob (%)"] = join[target_col].astype(float) * float(scale)
@@ -169,7 +174,12 @@ def main() -> None:
 	join = join.sort_values(by="Diff (%)", ascending=False)
 
 	st.subheader("Comparison (overlapping words)")
-	cols = ["Word", "Yes Bid (%)", display_col, "Diff (%)", "Diff bucket"]
+	cols = ["Word", "Yes Bid (%)"]
+	# Add historical context if available
+	for extra in ["Times said", "Events possible"]:
+		if extra in join.columns:
+			cols.append(extra)
+	cols += [display_col, "Diff (%)", "Diff bucket"]
 	st.dataframe(_style_diff(join[[c for c in cols if c in join.columns]]), width="stretch", hide_index=True)
 
 
