@@ -31,7 +31,9 @@ def get_cached_mention_universe(cache_bust: int = 0) -> Dict[str, object]:
 
 	# Historical mention events across last 12 months (closed/settled/determined)
 	try:
-		events_hist = client.list_mention_events_window_events_api(months=12, statuses=["closed", "settled", "determined"])
+		# Use broader window based on market end times to avoid missing events where
+		# event-level close filters exclude valid markets within the lookback.
+		events_hist = client.list_mention_events_window(months=12)
 	except Exception:
 		# Fallback: build from markets window if events API route is unavailable at runtime
 		try:
