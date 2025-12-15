@@ -8,7 +8,7 @@ from collections import Counter, defaultdict
 
 from src.kalshi import KalshiClient
 from src.db import get_session, init_db
-from src.storage import add_event_tags, get_event_tags_bulk
+from src.storage import add_event_tags, get_event_tags_bulk, remove_event_tags
 from src.ui_components import inject_dark_theme
 from src.data_cache import get_cached_mention_universe
 
@@ -137,6 +137,20 @@ def main() -> None:
         months = st.selectbox("Lookback (months)", options=[3, 6, 12], index=0)
     include_closed = st.checkbox("Include closed (no final result yet)", value=False)
 
+    # Bulk actions (checked cards) — applies to whichever set of cards is currently shown
+    st.markdown("### Bulk actions")
+    bulk_cols = st.columns([2, 1, 1, 1])
+    with bulk_cols[0]:
+        bulk_raw = st.text_input("Bulk tag (comma-separated)", value="", key="hist_bulk_tag")
+    with bulk_cols[1]:
+        filter_checked = st.checkbox("Filter by checked cards", value=False, key="hist_filter_checked")
+    with bulk_cols[2]:
+        add_bulk = st.button("Add tags", key="hist_bulk_add", type="primary")
+    with bulk_cols[3]:
+        remove_bulk_btn = st.button("Remove tags", key="hist_bulk_remove", type="secondary")
+
+    bulk_tags = [t.strip() for t in (bulk_raw or "").split(",") if t.strip()]
+
     # Default: If no query or tag, show recent closed mention markets (cards; 6 per row)
     # Build refresh-aware cache key
     cache_key = "v1"
@@ -185,6 +199,39 @@ def main() -> None:
         except Exception:
             recent_tags_map = {}
 
+        # Bulk ops for recent events
+        def _recent_checked(evt: str) -> bool:
+            return bool(st.session_state.get(f"hist_checked_{evt}"))
+
+        checked_recent = [evt for evt in recent_evt_tickers if evt and _recent_checked(evt)]
+        if add_bulk or remove_bulk_btn:
+            if not checked_recent:
+                st.warning("No cards checked.")
+            elif not bulk_tags:
+                st.warning("Enter at least one tag in 'Bulk tag'.")
+            else:
+                try:
+                    with get_session() as sess:
+                        for evt_t in checked_recent:
+                            if add_bulk:
+                                add_event_tags(sess, evt_t, bulk_tags)
+                            if remove_bulk_btn:
+                                remove_event_tags(sess, evt_t, bulk_tags)
+                    st.success("Bulk update complete.")
+                    st.rerun()
+                except Exception:
+                    st.warning("Bulk update failed.")
+
+        if filter_checked and checked_recent:
+            keep = set(checked_recent)
+            recent_events = [e for e in recent_events if str(e.get("event_ticker") or "") in keep]
+            recent_evt_tickers = [str(e.get("event_ticker") or "") for e in recent_events if e.get("event_ticker")]
+            try:
+                with get_session() as sess:
+                    recent_tags_map = get_event_tags_bulk(sess, recent_evt_tickers)
+            except Exception:
+                recent_tags_map = recent_tags_map
+
         # Cards 6 per row
         cols_per_row = 6
         for i in range(0, len(recent_events), cols_per_row):
@@ -232,6 +279,7 @@ def main() -> None:
                     )
                     evt_t = str(e.get("event_ticker") or "")
                     if evt_t:
+                        st.checkbox("Checked", key=f"hist_checked_{evt_t}", value=bool(st.session_state.get(f"hist_checked_{evt_t}", False)))
                         existing_tags = recent_tags_map.get(evt_t, [])
                         if existing_tags:
                             st.caption("Tags: " + ", ".join(sorted(existing_tags)))
@@ -324,6 +372,39 @@ def main() -> None:
             return any(needle in t for t in tags)
         groups = [g for g in groups if group_has_tag(g)]
 
+    # Bulk ops for search results groups
+    def _checked(evt: str) -> bool:
+        return bool(st.session_state.get(f"hist_checked_{evt}"))
+
+    checked_groups = [evt for evt in event_tickers if evt and _checked(evt)]
+    if add_bulk or remove_bulk_btn:
+        if not checked_groups:
+            st.warning("No cards checked.")
+        elif not bulk_tags:
+            st.warning("Enter at least one tag in 'Bulk tag'.")
+        else:
+            try:
+                with get_session() as sess:
+                    for evt_t in checked_groups:
+                        if add_bulk:
+                            add_event_tags(sess, evt_t, bulk_tags)
+                        if remove_bulk_btn:
+                            remove_event_tags(sess, evt_t, bulk_tags)
+                st.success("Bulk update complete.")
+                st.rerun()
+            except Exception:
+                st.warning("Bulk update failed.")
+
+    if filter_checked and checked_groups:
+        keep = set(checked_groups)
+        groups = [g for g in groups if str(g.get("event_ticker") or "") in keep]
+        event_tickers = [str(g.get("event_ticker") or "") for g in groups if g.get("event_ticker")]
+        try:
+            with get_session() as sess:
+                tags_map = get_event_tags_bulk(sess, event_tickers)
+        except Exception:
+            tags_map = tags_map
+
     # Summary bar
     num_markets = len(groups)  # events count
     total_volume = sum(int(g["total_volume"]) for g in groups)
@@ -380,6 +461,8 @@ def main() -> None:
                 existing_tags = tags_map.get(evt_t, [])
                 if existing_tags:
                     st.caption("Tags: " + ", ".join(sorted(existing_tags)))
+                if evt_t:
+                    st.checkbox("Checked", key=f"hist_checked_{evt_t}", value=bool(st.session_state.get(f"hist_checked_{evt_t}", False)))
                 # Add tag control (event-level, multi-tag)
                 if evt_t:
                     tag_cols = st.columns([2, 1])

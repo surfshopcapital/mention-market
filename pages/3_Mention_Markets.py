@@ -10,7 +10,7 @@ from collections import Counter, defaultdict
 from src.kalshi import KalshiClient
 from src.config import get_kalshi_api_base_url
 from src.db import get_session, init_db
-from src.storage import add_event_tags, get_event_tags_bulk
+from src.storage import add_event_tags, get_event_tags_bulk, remove_event_tags
 from src.ui_components import inject_dark_theme
 from src.data_cache import get_cached_mention_universe
 
@@ -307,6 +307,52 @@ def main() -> None:
                     st.session_state["mm_tags_map"] = {}
                     st.session_state["mm_tags_loaded_at_ms"] = now_ms
 
+            # Bulk actions (checked cards)
+            st.markdown("### Bulk actions")
+            bulk_cols = st.columns([2, 1, 1, 1])
+            with bulk_cols[0]:
+                bulk_raw = st.text_input("Bulk tag (comma-separated)", value="", key="mm_bulk_tag")
+            with bulk_cols[1]:
+                filter_checked = st.checkbox("Filter by checked cards", value=False, key="mm_filter_checked")
+            with bulk_cols[2]:
+                add_bulk = st.button("Add tags", key="mm_bulk_add", type="primary")
+            with bulk_cols[3]:
+                remove_bulk = st.button("Remove tags", key="mm_bulk_remove", type="secondary")
+
+            def _is_checked(evt: str) -> bool:
+                return bool(st.session_state.get(f"mm_checked_{evt}"))
+
+            checked_evts = [
+                str(g.get("event_ticker") or "")
+                for g in groups
+                if str(g.get("event_ticker") or "") and _is_checked(str(g.get("event_ticker") or ""))
+            ]
+            bulk_tags = [t.strip() for t in (bulk_raw or "").split(",") if t.strip()]
+
+            if add_bulk or remove_bulk:
+                if not checked_evts:
+                    st.warning("No cards checked.")
+                elif not bulk_tags:
+                    st.warning("Enter at least one tag in 'Bulk tag'.")
+                else:
+                    try:
+                        with get_session() as sess:
+                            for evt_t in checked_evts:
+                                if add_bulk:
+                                    add_event_tags(sess, evt_t, bulk_tags)
+                                if remove_bulk:
+                                    remove_event_tags(sess, evt_t, bulk_tags)
+                        st.success("Bulk update complete.")
+                        # Force tag reload on rerun
+                        st.session_state["mm_tags_loaded_at_ms"] = None
+                        st.rerun()
+                    except Exception:
+                        st.warning("Bulk update failed.")
+
+            if filter_checked and checked_evts:
+                keep = set(checked_evts)
+                groups = [g for g in groups if str(g.get("event_ticker") or "") in keep]
+
             # Top summary bar (events)
             total_markets = len(groups)  # number of events
             total_volume = sum(int(g["total_volume"]) for g in groups)
@@ -362,7 +408,7 @@ def main() -> None:
                         first_ticker = g["items"][0].get("ticker") if g["items"] else ""
                         evt_ticker = str(g.get("event_ticker") or "")
                         group_key = (first_ticker or evt_ticker or f"{i}_{abs(hash(g.get('display_title', '')))}").replace(" ", "_")
-                        ctrl_cols = st.columns([1, 1, 1, 2])
+                        ctrl_cols = st.columns([1, 1, 1, 1, 2])
                         with ctrl_cols[0]:
                             if st.button("View strikes", key=f"view_{group_key}"):
                                 st.session_state["mm_selected_event"] = g.get("event_ticker") or g.get("display_title")
@@ -376,6 +422,8 @@ def main() -> None:
                                 st.session_state["compare_event"] = g
                                 st.success("Event staged for comparison. Open the Comparison page.")
                         with ctrl_cols[3]:
+                            st.checkbox("Checked", key=f"mm_checked_{evt_ticker}", value=bool(st.session_state.get(f"mm_checked_{evt_ticker}", False)))
+                        with ctrl_cols[4]:
                             tag_val = st.text_input(
                                 "Tag",
                                 value="",

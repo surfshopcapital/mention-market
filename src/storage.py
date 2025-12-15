@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Iterable, List, Optional, Sequence
 
-from sqlalchemy import asc, desc, select
+from sqlalchemy import asc, delete, desc, select
 from sqlalchemy.orm import Session
 
 from .models import EventTag, MarketTag, StrategyNote, Tag, Transcript, TradeEntry, transcript_tag_association
@@ -156,6 +156,17 @@ def add_event_tags(session: Session, event_ticker: str, tag_names: Sequence[str]
     to_add = [t for t in clean if t not in existing_set]
     for tag in to_add:
         session.add(EventTag(event_ticker=event_ticker, tag=tag))
+    session.flush()
+    return get_event_tags(session, event_ticker)
+
+
+def remove_event_tags(session: Session, event_ticker: str, tag_names: Sequence[str]) -> List[str]:
+    clean = sorted({(t or "").strip() for t in tag_names if t and (t or "").strip()})
+    if not clean:
+        return get_event_tags(session, event_ticker)
+    session.execute(
+        delete(EventTag).where(EventTag.event_ticker == event_ticker).where(EventTag.tag.in_(clean))
+    )
     session.flush()
     return get_event_tags(session, event_ticker)
 
