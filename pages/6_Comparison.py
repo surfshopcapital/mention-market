@@ -132,7 +132,7 @@ def main() -> None:
 		df_hist = hist_df.rename(columns={"Strike (word)": "Word", "% said": "% said"}).copy()
 		# Carry through extra context columns when present
 		hcols = ["Word", "% said"]
-		for extra in ["Times said", "Events possible"]:
+		for extra in ["Times said", "Events possible", "Trend"]:
 			if extra in df_hist.columns:
 				hcols.append(extra)
 		join = pd.merge(df_event, df_hist[hcols], on="Word", how="inner")
@@ -176,7 +176,7 @@ def main() -> None:
 	st.subheader("Comparison (overlapping words)")
 	cols = ["Word", "Yes Bid (%)"]
 	# Add historical context if available
-	for extra in ["Times said", "Events possible"]:
+	for extra in ["Times said", "Events possible", "Trend"]:
 		if extra in join.columns:
 			cols.append(extra)
 	cols += [display_col, "Diff (%)", "Diff bucket"]

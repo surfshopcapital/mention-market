@@ -598,18 +598,43 @@ def main() -> None:
             said_count = 0
             vol_sum = 0
             most_recent_ts = None
+            # Track timestamps/results for trend calculation
+            ts_res: list[tuple[pd.Timestamp, str]] = []
             for m in items:
                 res = (m.get("result") or "").strip().upper()
                 if res == "YES":
                     said_count += 1
                 vol_sum += int(m.get("volume") or 0)
                 ts = _safe_parse_dt(m.get("close_time") or m.get("end_date") or m.get("expiry_time") or m.get("latest_expiration_time"))
+                if ts is not None:
+                    ts_res.append((ts, res))
                 if ts is not None and (most_recent_ts is None or ts > most_recent_ts):
                     most_recent_ts = ts
             if bucket_choice != "All" and not in_bucket(most_recent_ts):
                 continue
             pct = (said_count / total * 100.0) if total else 0.0
             avg_vol = (vol_sum / total) if total else 0.0
+
+            # Trend: % said over most recent 10 events for this word (or all if < 10 total)
+            if total <= 0:
+                trend_str = ""
+            else:
+                # Sort newest to oldest; fall back to all items if timestamps are missing
+                ts_res_sorted = sorted(ts_res, key=lambda x: x[0], reverse=True)
+                if len(ts_res_sorted) >= 10:
+                    window = ts_res_sorted[:10]
+                    denom = 10
+                else:
+                    # If fewer than 10 total events, trend uses all available events (count shown)
+                    window = ts_res_sorted if ts_res_sorted else []
+                    denom = len(window) if window else 0
+                if denom > 0:
+                    yes_ct = sum(1 for _, r in window if (r or "").upper() == "YES")
+                    trend_pct = yes_ct / denom * 100.0
+                    trend_str = f"{trend_pct:.2f}" if total >= 10 else f"{trend_pct:.2f} ({total})"
+                else:
+                    # No timestamps; fall back to overall pct and show total count if <10
+                    trend_str = f"{pct:.2f}" if total >= 10 else f"{pct:.2f} ({total})"
             # Search filter on word
             if search_word.strip():
                 if search_word.strip().lower() not in word.lower():
@@ -620,6 +645,7 @@ def main() -> None:
                     "Times said": said_count,
                     "Events possible": total,
                     "% said": round(pct, 2),
+                    "Trend": trend_str,
                     "Average volume": int(avg_vol),
                     "Most recent end": most_recent_ts.strftime("%b %d, %Y %H:%M UTC") if most_recent_ts is not None else "—",
                 }
