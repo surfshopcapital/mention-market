@@ -630,6 +630,47 @@ def main() -> None:
             st.dataframe(df_sum, width="stretch", hide_index=True)
             # Save to session for Comparison page
             st.session_state["hist_summary_df"] = df_sum
+
+            # Strike drilldown (event list for a selected word)
+            st.markdown("### Strike drilldown")
+            chosen_word = st.selectbox(
+                "Select a strike (word)",
+                options=df_sum["Strike (word)"].tolist(),
+                index=0,
+                key="hist_drill_word",
+            )
+            # Build event list for this word
+            rows_events = []
+            for m in summary_markets:
+                w = _derive_description(m)
+                if w != chosen_word:
+                    continue
+                res = (m.get("result") or "").strip().upper()
+                said = "Said" if res == "YES" else ("Not said" if res == "NO" else "")
+                end_ts = _safe_parse_dt(m.get("close_time") or m.get("end_date") or m.get("expiry_time") or m.get("latest_expiration_time"))
+                rows_events.append(
+                    {
+                        "End": end_ts,
+                        "Event": str(m.get("event_ticker") or ""),
+                        "Title": str(m.get("title") or ""),
+                        "Result": res,
+                        "Said?": said,
+                        "Final volume": int(m.get("volume") or 0),
+                        "Ticker": str(m.get("ticker") or ""),
+                    }
+                )
+            df_events = pd.DataFrame(rows_events)
+            if not df_events.empty:
+                # Most recent at top
+                df_events = df_events.sort_values(by="End", ascending=False, na_position="last")
+                df_events["End"] = df_events["End"].dt.strftime("%b %d, %Y %H:%M UTC")
+                st.dataframe(
+                    df_events[["End", "Event", "Title", "Said?", "Result", "Final volume", "Ticker"]],
+                    width="stretch",
+                    hide_index=True,
+                )
+            else:
+                st.info("No events found for the selected strike in the current filtered set.")
         else:
             st.info("No strikes found for the current filters.")
     except Exception:

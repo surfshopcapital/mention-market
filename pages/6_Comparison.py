@@ -182,6 +182,109 @@ def main() -> None:
 	cols += [display_col, "Diff (%)", "Diff bucket"]
 	st.dataframe(_style_diff(join[[c for c in cols if c in join.columns]]), width="stretch", hide_index=True)
 
+	# Expected PnL calculator (only meaningful when the comparison column is a probability %)
+	st.divider()
+	st.subheader("Expected PnL (using comparison probability)")
+	if display_col not in join.columns:
+		st.info("Probability column unavailable for PnL.")
+		return
+
+	# We treat display_col as a percentage probability when it looks like one
+	try:
+		_ = float(join[display_col].dropna().iloc[0]) if not join.empty else 0.0
+	except Exception:
+		st.info("Selected comparison metric is not a probability; PnL is only available for probability-based comparisons.")
+		return
+
+	c1, c2, c3 = st.columns([1, 1, 2])
+	with c1:
+		total_bet = st.number_input("Total bet ($)", min_value=0.0, value=1000.0, step=100.0)
+	with c2:
+		side = st.selectbox("Side", options=["YES", "NO"], index=0)
+	with c3:
+		dist = st.radio(
+			"Allocation",
+			options=[
+				"Evenly distributed across each strike",
+				"Only strikes where Yes Bid (%) > probability (betting NO value filter)",
+			],
+			index=0,
+			horizontal=True,
+		)
+
+	# Select eligible strikes for allocation
+	df_calc = join.copy()
+	df_calc["prob_pct"] = pd.to_numeric(df_calc[display_col], errors="coerce")
+	df_calc["yes_bid_pct"] = pd.to_numeric(df_calc["Yes Bid (%)"], errors="coerce")
+	df_calc["yes_ask_pct"] = pd.to_numeric(df_calc.get("Yes Ask (%)", pd.Series([None] * len(df_calc))), errors="coerce")
+	df_calc = df_calc.dropna(subset=["prob_pct", "yes_bid_pct"])
+	if df_calc.empty:
+		st.info("No rows available for PnL calculation.")
+		return
+
+	if dist.startswith("Only strikes"):
+		df_calc = df_calc[df_calc["yes_bid_pct"] > df_calc["prob_pct"]]
+		if df_calc.empty:
+			st.info("No strikes matched the filter (Yes Bid > probability).")
+			return
+
+	# Allocate dollars
+	n = len(df_calc)
+	alloc_per = float(total_bet) / max(n, 1)
+	df_calc["alloc_$"] = alloc_per
+
+	# Price model (approximation): use YES ask if available for buying YES, else YES bid.
+	# For NO, approximate price as (100 - YES bid)/100 (since NO book not available on comparison page).
+	def _yes_price(p_bid: float, p_ask: float | None) -> float:
+		if p_ask is not None and p_ask > 0:
+			return float(p_ask) / 100.0
+		return float(p_bid) / 100.0
+
+	def _no_price(p_bid: float, p_ask: float | None) -> float:
+		# Use opposite of YES bid/ask to approximate NO; prefer using YES bid for conservative pricing.
+		base = float(p_bid)
+		return max(0.001, (100.0 - base) / 100.0)
+
+	def _expected_profit(alloc: float, prob_pct: float, yes_bid: float, yes_ask: float | None, side: str) -> float:
+		p = max(0.0, min(1.0, float(prob_pct) / 100.0))
+		if side == "YES":
+			price = _yes_price(yes_bid, yes_ask)
+			# expected payout = (alloc/price) * p ; profit = payout - alloc
+			return (alloc / max(price, 0.001)) * p - alloc
+		# NO
+		price = _no_price(yes_bid, yes_ask)
+		return (alloc / max(price, 0.001)) * (1.0 - p) - alloc
+
+	exp = []
+	for _, r in df_calc.iterrows():
+		exp.append(
+			_expected_profit(
+				float(r["alloc_$"]),
+				float(r["prob_pct"]),
+				float(r["yes_bid_pct"]),
+				(float(r["yes_ask_pct"]) if pd.notna(r["yes_ask_pct"]) else None),
+				side,
+			)
+		)
+	df_calc["expected_pnl_$"] = exp
+
+	st.metric("Num strikes bet", int(len(df_calc)))
+	st.metric("Expected PnL ($)", round(float(df_calc["expected_pnl_$"].sum()), 2))
+
+	out_cols = ["Word", "alloc_$", "yes_bid_pct", "prob_pct", "expected_pnl_$"]
+	st.dataframe(
+		df_calc[out_cols].rename(
+			columns={
+				"alloc_$": "Allocated ($)",
+				"yes_bid_pct": "Yes Bid (%)",
+				"prob_pct": f"{display_col}",
+				"expected_pnl_$": "Expected PnL ($)",
+			}
+		),
+		width="stretch",
+		hide_index=True,
+	)
+
 
 if __name__ == "__main__":
 	main()
